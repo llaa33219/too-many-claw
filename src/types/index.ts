@@ -10,9 +10,9 @@ export enum AgentState {
 
 /** Model tier mapping to Claude models */
 export enum ModelTier {
-  OPUS = 'claude-opus-4-5',
-  SONNET = 'claude-sonnet-4-5',
-  HAIKU = 'claude-haiku-4-5',
+  OPUS = 'anthropic/claude-opus-4-5',
+  SONNET = 'anthropic/claude-sonnet-4-5',
+  HAIKU = 'anthropic/claude-haiku-3-5',
 }
 
 /** Agent categories for grouping */
