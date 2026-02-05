@@ -16,7 +16,7 @@ import { ConfigManager } from './config/ConfigManager.js';
 import { AGENT_DEFINITIONS } from './agents/definitions.js';
 import { DiscordAdapter } from './discord/DiscordAdapter.js';
 import { Orchestrator } from './core/Orchestrator.js';
-import { AgentCategory } from './types/index.js';
+import { AgentCategory, ModelTier } from './types/index.js';
 import { OpenClawDaemon } from './daemon/index.js';
 
 // ============================================
@@ -172,661 +172,280 @@ program
   .description('Too Many Claw - 35 AI agents collaborating via Discord')
   .version('1.0.4');
 
-// Comprehensive setup wizard
+// Simplified setup wizard
 program
   .command('setup')
-  .description('Interactive setup wizard for Too Many Claw')
+  .description('Quick setup for Too Many Claw')
   .action(async () => {
     console.log(chalk.cyan(`
 ╔════════════════════════════════════════════════════════════╗
 ║                                                            ║
-║   🦀 Too Many Claw - Setup Wizard                          ║
-║                                                            ║
-║   This wizard will help you configure your system          ║
+║   🦀 Too Many Claw - Quick Setup                           ║
 ║                                                            ║
 ╚════════════════════════════════════════════════════════════╝
 `));
 
     const config = new ConfigManager();
 
-    // Check for OpenClaw Discord configuration
-    await checkAndImportOpenClaw(config);
-
-    // Build menu choices (conditionally include OpenClaw option)
-    const menuChoices = [
-      { name: '🔧 Full Setup (Recommended for first time)', value: 'full' },
-      { name: '🤖 Discord Bot Settings', value: 'discord' },
-      { name: '🔗 Webhook Configuration', value: 'webhooks' },
-      ...(config.hasOpenClawConfig() ? [{ name: '📥 Import from OpenClaw', value: 'openclaw' }] : []),
-      { name: '📊 View Current Configuration', value: 'view' },
-      { name: '🗑️  Reset Configuration', value: 'reset' },
-      { name: '❌ Exit', value: 'exit' },
-    ];
-
-    // Main menu
-    const { setupType } = await inquirer.prompt([
-      {
-        type: 'list',
-        name: 'setupType',
-        message: 'What would you like to configure?',
-        choices: menuChoices,
-      },
-    ]);
-
-    switch (setupType) {
-      case 'full':
-        await runFullSetup(config);
-        break;
-      case 'discord':
-        await runDiscordSetup(config);
-        break;
-      case 'webhooks':
-        await runWebhookSetup(config);
-        break;
-      case 'openclaw':
-        await importFromOpenClawManual(config);
-        break;
-      case 'view':
-        viewConfiguration(config);
-        break;
-      case 'reset':
-        await resetConfiguration(config);
-        break;
-      case 'exit':
-        console.log(chalk.gray('\nGoodbye! 👋\n'));
-        break;
-    }
-  });
-
-/**
- * Check for OpenClaw config and offer to import at setup start
- */
-async function checkAndImportOpenClaw(config: ConfigManager): Promise<boolean> {
-  if (!config.hasOpenClawDiscordConfig()) {
-    return false;
-  }
-
-  // OpenClaw Discord config detected!
-  console.log(chalk.green('┌─────────────────────────────────────────────────────────────┐'));
-  console.log(chalk.green('│  ✨ OpenClaw Discord configuration detected!                │'));
-  console.log(chalk.green('└─────────────────────────────────────────────────────────────┘'));
-
-  const openclawDiscord = config.getOpenClawDiscordConfig();
-  if (!openclawDiscord) return false;
-
-  // Get detailed import summary
-  const summary = config.getOpenClawImportSummary();
-  const extracted = summary.extracted;
-
-  // Show what can be imported
-  console.log(chalk.white('\nThe following settings can be imported:\n'));
-  
-  if (extracted?.token) {
-    const maskedToken = extracted.token.substring(0, 10) + '...' + extracted.token.slice(-4);
-    console.log(chalk.gray(`  • Bot Token: ${maskedToken}`));
-  }
-  if (extracted?.guildId) {
-    console.log(chalk.gray(`  • Server (Guild) ID: ${extracted.guildId}`));
-  }
-  if (extracted?.chatChannelId) {
-    console.log(chalk.gray(`  • Chat Channel: ${extracted.chatChannelId}`));
-  }
-  if (extracted?.statusChannelId) {
-    console.log(chalk.gray(`  • Status Channel: ${extracted.statusChannelId}`));
-  }
-  if (extracted?.allowedChannels && extracted.allowedChannels.length > 0) {
-    console.log(chalk.gray(`  • All Allowed Channels: ${extracted.allowedChannels.length} channel(s)`));
-    extracted.allowedChannels.forEach((ch) => {
-      console.log(chalk.gray(`      - ${ch}`));
-    });
-  }
-  console.log();
-
-  const { shouldImport } = await inquirer.prompt([
-    {
-      type: 'confirm',
-      name: 'shouldImport',
-      message: 'Would you like to import these settings from OpenClaw?',
-      default: true,
-    },
-  ]);
-
-  if (!shouldImport) {
-    console.log(chalk.gray('\nSkipped OpenClaw import.\n'));
-    return false;
-  }
-
-  // Perform import
-  const result = config.importFromOpenClaw();
-
-  if (result.success) {
-    console.log(chalk.green('\n✓ Import successful!\n'));
-    console.log(chalk.white('Imported settings:'));
-    if (result.imported.token) {
-      console.log(chalk.green('  ✓ Bot Token'));
-    }
-    if (result.imported.guildId) {
-      console.log(chalk.green(`  ✓ Server (Guild) ID: ${result.imported.guildId}`));
-    }
-    if (result.imported.chatChannelId) {
-      console.log(chalk.green(`  ✓ Chat Channel: ${result.imported.chatChannelId}`));
-    }
-    if (result.imported.statusChannelId) {
-      console.log(chalk.green(`  ✓ Status Channel: ${result.imported.statusChannelId}`));
-    }
-    console.log();
-
-    // Check what's still needed
-    const currentConfig = config.getDiscordConfig();
-    const missing: string[] = [];
-    if (!currentConfig.guildId) missing.push('Server (Guild) ID');
-    if (!currentConfig.chatChannelId) missing.push('Chat Channel ID');
-
-    if (missing.length > 0) {
-      console.log(chalk.yellow('⚠ The following settings still need to be configured:'));
-      missing.forEach(m => console.log(chalk.yellow(`  • ${m}`)));
-      console.log();
-    }
-  } else {
-    console.log(chalk.yellow(`\n⚠ ${result.message}\n`));
-  }
-
-  return result.success;
-}
-
-/**
- * Manual import from OpenClaw (menu option)
- */
-async function importFromOpenClawManual(config: ConfigManager): Promise<void> {
-  console.log(chalk.cyan('\n📥 Import from OpenClaw\n'));
-
-  if (!config.hasOpenClawConfig()) {
-    console.log(chalk.yellow('OpenClaw configuration file not found.'));
-    console.log(chalk.gray(`Expected location: ${config.getOpenClawConfigPath()}`));
-    console.log(chalk.gray('\nMake sure OpenClaw is installed and configured.\n'));
-    return;
-  }
-
-  if (!config.hasOpenClawDiscordConfig()) {
-    console.log(chalk.yellow('OpenClaw is installed but has no Discord configuration.'));
-    console.log(chalk.gray('\nPlease configure Discord in OpenClaw first, then try again.\n'));
-    return;
-  }
-
-  await checkAndImportOpenClaw(config);
-}
-
-async function runFullSetup(config: ConfigManager): Promise<void> {
-  // Check if Discord is already configured (possibly from OpenClaw import)
-  const currentDiscord = config.getDiscordConfig();
-  const hasToken = !!currentDiscord.token;
-  const hasGuild = !!currentDiscord.guildId;
-  const hasChatChannel = !!currentDiscord.chatChannelId;
-
-  if (hasToken && hasGuild && hasChatChannel) {
-    console.log(chalk.green('\n✓ Discord is already configured!\n'));
-    const { reconfigure } = await inquirer.prompt([
-      {
-        type: 'confirm',
-        name: 'reconfigure',
-        message: 'Would you like to reconfigure Discord settings?',
-        default: false,
-      },
-    ]);
-
-    if (!reconfigure) {
-      console.log(chalk.cyan('\n📋 Step 1/3: Discord Bot Configuration - Skipped\n'));
+    // Step 1: Auto-import from OpenClaw
+    console.log(chalk.cyan('\n📋 Step 1/3: Discord Configuration\n'));
+    
+    if (config.hasOpenClawDiscordConfig()) {
+      console.log(chalk.green('✓ OpenClaw Discord configuration detected!'));
+      const result = config.importFromOpenClaw();
+      if (result.success) {
+        console.log(chalk.green('✓ Settings imported from OpenClaw'));
+        if (result.imported.token) console.log(chalk.gray('  • Bot Token'));
+        if (result.imported.guildId) console.log(chalk.gray(`  • Guild ID: ${result.imported.guildId}`));
+        if (result.imported.chatChannelId) console.log(chalk.gray(`  • Chat Channel: ${result.imported.chatChannelId}`));
+      }
     } else {
-      console.log(chalk.cyan('\n📋 Step 1/3: Discord Bot Configuration\n'));
-      await runDiscordSetup(config);
-    }
-  } else {
-    console.log(chalk.cyan('\n📋 Step 1/3: Discord Bot Configuration\n'));
-    
-    if (hasToken) {
-      console.log(chalk.green('✓ Bot token already configured (imported from OpenClaw)\n'));
-    } else {
-      console.log(chalk.gray('To use Too Many Claw, you need a Discord bot. Here\'s how to get one:'));
-      console.log(chalk.gray('  1. Go to https://discord.com/developers/applications'));
-      console.log(chalk.gray('  2. Create a new application'));
-      console.log(chalk.gray('  3. Go to the "Bot" tab and create a bot'));
-      console.log(chalk.gray('  4. Copy the bot token'));
-      console.log(chalk.gray('  5. Enable "Message Content Intent" in the Bot settings'));
-      console.log(chalk.gray('  6. Invite the bot to your server with appropriate permissions\n'));
+      console.log(chalk.yellow('OpenClaw Discord config not found.'));
+      console.log(chalk.gray('Please configure Discord settings manually.\n'));
     }
 
-    await runDiscordSetup(config);
-  }
+    // Step 2: Verify/configure Discord settings
+    const currentDiscord = config.getDiscordConfig();
+    const needsToken = !currentDiscord.token;
+    const needsGuild = !currentDiscord.guildId;
+    const needsChannel = !currentDiscord.chatChannelId;
 
-  console.log(chalk.cyan('\n📋 Step 2/3: Webhook Configuration (Optional)\n'));
-  console.log(chalk.gray('Webhooks allow each agent to have a unique name and avatar.'));
-  console.log(chalk.gray('Without webhooks, all agents will use the bot\'s identity.\n'));
+    if (needsToken || needsGuild || needsChannel) {
+      console.log(chalk.yellow('\nSome Discord settings are missing. Please provide:\n'));
 
-  const { setupWebhooks } = await inquirer.prompt([
-    {
-      type: 'confirm',
-      name: 'setupWebhooks',
-      message: 'Would you like to configure webhooks now?',
-      default: false,
-    },
-  ]);
-
-  if (setupWebhooks) {
-    await runWebhookSetup(config);
-  }
-
-  console.log(chalk.cyan('\n📋 Step 3/3: Verification\n'));
-  viewConfiguration(config);
-
-  console.log(chalk.green('\n✨ Setup Complete!\n'));
-  console.log(chalk.white('Next steps:'));
-  console.log(chalk.gray('  • Run `tmc simulate` to test locally without Discord'));
-  console.log(chalk.gray('  • Run `tmc start` to start the Discord bot'));
-  console.log(chalk.gray('  • Run `tmc status` to view all agents\n'));
-}
-
-async function runDiscordSetup(config: ConfigManager): Promise<void> {
-  const currentDiscord = config.getDiscordConfig();
-
-  // Show which fields are pre-filled
-  if (currentDiscord.token || currentDiscord.guildId || currentDiscord.chatChannelId) {
-    console.log(chalk.gray('Pre-filled values (press Enter to keep, or type new value):\n'));
-    if (currentDiscord.token) {
-      console.log(chalk.gray(`  • Token: ${currentDiscord.token.substring(0, 10)}...`));
-    }
-    if (currentDiscord.guildId) {
-      console.log(chalk.gray(`  • Guild ID: ${currentDiscord.guildId}`));
-    }
-    if (currentDiscord.chatChannelId) {
-      console.log(chalk.gray(`  • Chat Channel: ${currentDiscord.chatChannelId}`));
-    }
-    console.log();
-  }
-
-  const answers = await inquirer.prompt([
-    {
-      type: 'password',
-      name: 'token',
-      message: currentDiscord.token ? 'Discord Bot Token (press Enter to keep current):' : 'Discord Bot Token:',
-      default: currentDiscord.token || '',
-      mask: '*',
-      validate: (input: string) => {
-        if (!input || input.length < 50) {
-          return 'Please enter a valid Discord bot token';
-        }
-        return true;
-      },
-    },
-    {
-      type: 'input',
-      name: 'guildId',
-      message: currentDiscord.guildId ? 'Discord Server (Guild) ID (press Enter to keep current):' : 'Discord Server (Guild) ID:',
-      default: currentDiscord.guildId || '',
-      validate: (input: string) => {
-        if (!input || !/^\d{17,19}$/.test(input)) {
-          return 'Please enter a valid Discord server ID (17-19 digit number)';
-        }
-        return true;
-      },
-    },
-    {
-      type: 'input',
-      name: 'chatChannelId',
-      message: currentDiscord.chatChannelId ? 'Chat Channel ID (press Enter to keep current):' : 'Chat Channel ID (main conversation channel):',
-      default: currentDiscord.chatChannelId || '',
-      validate: (input: string) => {
-        if (!input || !/^\d{17,19}$/.test(input)) {
-          return 'Please enter a valid Discord channel ID (17-19 digit number)';
-        }
-        return true;
-      },
-    },
-    {
-      type: 'input',
-      name: 'statusChannelId',
-      message: 'Status Channel ID (optional - for agent join/leave logs):',
-      default: currentDiscord.statusChannelId || '',
-    },
-  ]);
-
-  config.setDiscordConfig({
-    token: answers.token,
-    guildId: answers.guildId,
-    chatChannelId: answers.chatChannelId,
-    statusChannelId: answers.statusChannelId || undefined,
-  });
-
-  console.log(chalk.green('\n✓ Discord settings saved successfully!'));
-}
-
-async function runWebhookSetup(config: ConfigManager): Promise<void> {
-  const discordConfig = config.getDiscordConfig();
-  const hasDiscordConfig = !!(discordConfig.token && discordConfig.chatChannelId);
-
-  // Build choices - auto-create only available if Discord is configured
-  const choices = [
-    { name: '📝 Use a single shared webhook (Recommended - avoids 15 webhook limit)', value: 'single' },
-    ...(hasDiscordConfig ? [{ name: '🤖 Auto-create webhooks (requires bot connection)', value: 'auto' }] : []),
-    { name: '📁 Configure webhooks per category', value: 'category' },
-    { name: '🔧 Configure webhooks per agent', value: 'individual' },
-    { name: '⏭️  Skip webhook configuration', value: 'skip' },
-  ];
-
-  if (!hasDiscordConfig) {
-    console.log(chalk.yellow('\n⚠ Auto-create webhooks requires Discord to be configured first.'));
-    console.log(chalk.gray('  Run Discord setup to enable this feature.\n'));
-  }
-
-  console.log(chalk.gray('\nWebhooks allow each agent to have a unique name and avatar in Discord.'));
-  console.log(chalk.gray('You can create them automatically or manually.\n'));
-
-  const { webhookMode } = await inquirer.prompt([
-    {
-      type: 'list',
-      name: 'webhookMode',
-      message: 'How would you like to configure webhooks?',
-      choices,
-    },
-  ]);
-
-  if (webhookMode === 'skip') {
-    return;
-  }
-
-  if (webhookMode === 'auto') {
-    await runAutoWebhookSetup(config);
-    return;
-  }
-
-  // Manual setup instructions
-  console.log(chalk.gray('\nTo create a webhook manually:'));
-  console.log(chalk.gray('  1. Go to your Discord channel settings'));
-  console.log(chalk.gray('  2. Click "Integrations" → "Webhooks"'));
-  console.log(chalk.gray('  3. Create a new webhook and copy its URL\n'));
-
-  if (webhookMode === 'single') {
-    console.log(chalk.cyan('\n💡 Recommended: Single webhook with dynamic usernames'));
-    console.log(chalk.gray('Each agent will appear with their own name and emoji avatar,'));
-    console.log(chalk.gray('but all messages go through one webhook (avoids 15 webhook limit).\n'));
-    
-    const { webhookUrl } = await inquirer.prompt([
-      {
-        type: 'input',
-        name: 'webhookUrl',
-        message: 'Enter the webhook URL:',
-        validate: (input: string) => {
-          if (!input.includes('discord.com/api/webhooks/')) {
-            return 'Please enter a valid Discord webhook URL';
-          }
-          return true;
-        },
-      },
-    ]);
-
-    // Set as base webhook (single webhook for all agents)
-    config.setBaseWebhook(webhookUrl);
-    console.log(chalk.green(`\n✓ Base webhook set for all ${AGENT_DEFINITIONS.length} agents`));
-    console.log(chalk.gray('  Each agent will use their unique name and emoji as avatar.'));
-  }
-
-  if (webhookMode === 'category') {
-    const categories = [...new Set(AGENT_DEFINITIONS.map(a => a.category))];
-    
-    for (const category of categories) {
-      const categoryAgents = AGENT_DEFINITIONS.filter(a => a.category === category);
-      const { webhookUrl } = await inquirer.prompt([
-        {
+      const answers = await inquirer.prompt([
+        ...(needsToken ? [{
+          type: 'password',
+          name: 'token',
+          message: 'Discord Bot Token:',
+          mask: '*',
+          validate: (input: string) => input.length >= 50 ? true : 'Please enter a valid Discord bot token',
+        }] : []),
+        ...(needsGuild ? [{
           type: 'input',
-          name: 'webhookUrl',
-          message: `Webhook URL for ${category} (${categoryAgents.length} agents):`,
-          default: '',
-        },
+          name: 'guildId',
+          message: 'Discord Server (Guild) ID:',
+          validate: (input: string) => /^\d{17,19}$/.test(input) ? true : 'Please enter a valid Discord server ID',
+        }] : []),
+        ...(needsChannel ? [{
+          type: 'input',
+          name: 'chatChannelId',
+          message: 'Chat Channel ID:',
+          validate: (input: string) => /^\d{17,19}$/.test(input) ? true : 'Please enter a valid channel ID',
+        }] : []),
       ]);
 
-      if (webhookUrl && webhookUrl.includes('discord.com/api/webhooks/')) {
-        for (const agent of categoryAgents) {
-          config.setWebhook(agent.id, webhookUrl);
-        }
-        console.log(chalk.green(`  ✓ Set for ${categoryAgents.length} ${category} agents`));
-      } else if (webhookUrl) {
-        console.log(chalk.yellow(`  ⚠ Skipped ${category} - invalid URL`));
-      }
-    }
-  }
+      config.setDiscordConfig({
+        token: answers.token || currentDiscord.token,
+        guildId: answers.guildId || currentDiscord.guildId,
+        chatChannelId: answers.chatChannelId || currentDiscord.chatChannelId,
+        statusChannelId: currentDiscord.statusChannelId,
+      });
 
-  if (webhookMode === 'individual') {
-    console.log(chalk.gray('\nEnter webhook URLs for individual agents (leave empty to skip):\n'));
+      console.log(chalk.green('\n✓ Discord settings saved!'));
+    } else {
+      console.log(chalk.green('\n✓ Discord is already configured!'));
+    }
+
+    // Step 3: Auto-create single base webhook
+    console.log(chalk.cyan('\n📋 Step 2/3: Webhook Configuration\n'));
+
+    const discordConfig = config.getDiscordConfig();
     
-    const { selectAgents } = await inquirer.prompt([
-      {
-        type: 'checkbox',
-        name: 'selectAgents',
-        message: 'Select agents to configure:',
-        choices: AGENT_DEFINITIONS.map(a => ({
-          name: `${a.emoji} ${a.name} (${a.id})`,
-          value: a.id,
-        })),
-        pageSize: 15,
-      },
-    ]);
-
-    for (const agentId of selectAgents) {
-      const agent = AGENT_DEFINITIONS.find(a => a.id === agentId);
-      if (!agent) continue;
-
-      const { webhookUrl } = await inquirer.prompt([
-        {
-          type: 'input',
-          name: 'webhookUrl',
-          message: `${agent.emoji} ${agent.name}:`,
-        },
-      ]);
-
-      if (webhookUrl && webhookUrl.includes('discord.com/api/webhooks/')) {
-        config.setWebhook(agentId, webhookUrl);
-        console.log(chalk.green(`  ✓ Set webhook for ${agent.name}`));
-      }
-    }
-  }
-}
-
-/**
- * Auto-create webhooks by connecting to Discord and creating them programmatically
- */
-async function runAutoWebhookSetup(config: ConfigManager): Promise<void> {
-  console.log(chalk.cyan('\n🤖 Auto-Create Webhooks\n'));
-  console.log(chalk.gray('This will connect to Discord and automatically create webhooks for all 35 agents.'));
-  console.log(chalk.gray('The bot needs MANAGE_WEBHOOKS permission in the target channel.\n'));
-
-  const discordConfig = config.getDiscordConfig();
-
-  // Validate Discord config
-  if (!discordConfig.token) {
-    console.log(chalk.red('❌ Discord bot token not configured.'));
-    console.log(chalk.gray('Run `tmc setup` to configure Discord settings first.\n'));
-    return;
-  }
-
-  if (!discordConfig.chatChannelId) {
-    console.log(chalk.red('❌ Chat channel not configured.'));
-    console.log(chalk.gray('Run `tmc setup` to configure Discord settings first.\n'));
-    return;
-  }
-
-  // Warn about Discord's webhook limit
-  console.log(chalk.yellow('⚠ Important: Discord limits webhooks to 15 per channel.'));
-  console.log(chalk.gray(`  You have ${AGENT_DEFINITIONS.length} agents, so some will share webhooks or fail to create.`));
-  console.log(chalk.gray('  Consider using multiple channels or a single shared webhook if this is an issue.\n'));
-
-  // Confirm before proceeding
-  const { confirm } = await inquirer.prompt([
-    {
-      type: 'confirm',
-      name: 'confirm',
-      message: `Create webhooks for all ${AGENT_DEFINITIONS.length} agents in channel ${discordConfig.chatChannelId}?`,
-      default: true,
-    },
-  ]);
-
-  if (!confirm) {
-    console.log(chalk.yellow('\nWebhook creation cancelled.\n'));
-    return;
-  }
-
-  // Connect to Discord
-  const connectSpinner = ora('Connecting to Discord...').start();
-
-  let adapter: DiscordAdapter;
-  try {
-    adapter = new DiscordAdapter({
-      token: discordConfig.token,
-      guildId: discordConfig.guildId || '0', // Placeholder, will be auto-detected
-      chatChannelId: discordConfig.chatChannelId,
-      statusChannelId: discordConfig.statusChannelId,
-    });
-
-    await adapter.connect();
-    connectSpinner.succeed('Connected to Discord');
-
-    // Wait for bot to fully initialize (ready event)
-    await new Promise(resolve => setTimeout(resolve, 1000));
-  } catch (error) {
-    connectSpinner.fail('Failed to connect to Discord');
-    console.log(chalk.red(`\nError: ${error instanceof Error ? error.message : 'Unknown error'}`));
-    console.log(chalk.gray('\nMake sure your bot token is valid and the bot is invited to your server.\n'));
-    return;
-  }
-
-  try {
-    // Auto-detect guildId if not set
-    if (!discordConfig.guildId) {
-      const detectSpinner = ora('Detecting server (guild) ID...').start();
-      const detectedGuildId = await adapter.detectGuildId();
-      
-      if (detectedGuildId) {
-        config.updateGuildId(detectedGuildId);
-        detectSpinner.succeed(`Detected server ID: ${detectedGuildId}`);
-      } else {
-        detectSpinner.warn('Could not auto-detect server ID (bot may not be in any servers)');
-      }
-    }
-
-    // Check webhook permissions
-    const permSpinner = ora('Checking webhook permissions...').start();
-    const hasPermission = await adapter.hasWebhookPermission(discordConfig.chatChannelId);
-
-    if (!hasPermission) {
-      permSpinner.fail('Bot lacks MANAGE_WEBHOOKS permission');
-      console.log(chalk.red('\n❌ The bot does not have permission to manage webhooks in this channel.'));
-      console.log(chalk.gray('\nTo fix this:'));
-      console.log(chalk.gray('  1. Go to your Discord server settings'));
-      console.log(chalk.gray('  2. Navigate to Roles or Channel Permissions'));
-      console.log(chalk.gray('  3. Grant the bot "Manage Webhooks" permission'));
-      console.log(chalk.gray('  4. Try again\n'));
-      await adapter.disconnect();
+    if (!discordConfig.token || !discordConfig.chatChannelId) {
+      console.log(chalk.red('❌ Discord not fully configured. Cannot create webhook.'));
+      console.log(chalk.gray('Run `tmc setup` again after configuring Discord.\n'));
       return;
     }
-    permSpinner.succeed('Bot has webhook permissions');
 
-    // Create webhooks with progress
-    console.log(chalk.cyan(`\nCreating webhooks for ${AGENT_DEFINITIONS.length} agents...\n`));
+    // Check if base webhook already exists
+    if (config.hasBaseWebhook()) {
+      console.log(chalk.green('✓ Base webhook already configured!'));
+      console.log(chalk.gray(`  All ${AGENT_DEFINITIONS.length} agents use this shared webhook.\n`));
+    } else {
+      const spinner = ora('Connecting to Discord...').start();
 
-    const progressSpinner = ora('Starting webhook creation...').start();
+      try {
+        const adapter = new DiscordAdapter({
+          token: discordConfig.token,
+          guildId: discordConfig.guildId || '0',
+          chatChannelId: discordConfig.chatChannelId,
+          statusChannelId: discordConfig.statusChannelId,
+        });
 
-    const webhooks = await adapter.autoCreateWebhooks(
-      discordConfig.chatChannelId,
-      (current, total, agentName) => {
-        progressSpinner.text = `Creating webhooks... (${current}/${total}) ${agentName}`;
+        await adapter.connect();
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        spinner.succeed('Connected to Discord');
+
+        // Auto-detect guildId if not set
+        if (!discordConfig.guildId) {
+          const detectedGuildId = await adapter.detectGuildId();
+          if (detectedGuildId) {
+            config.updateGuildId(detectedGuildId);
+            console.log(chalk.green(`✓ Detected server ID: ${detectedGuildId}`));
+          }
+        }
+
+        // Check webhook permission
+        const hasPermission = await adapter.hasWebhookPermission(discordConfig.chatChannelId);
+        if (!hasPermission) {
+          spinner.fail('Bot lacks MANAGE_WEBHOOKS permission');
+          console.log(chalk.red('\n❌ Grant "Manage Webhooks" permission to the bot and try again.\n'));
+          await adapter.disconnect();
+          return;
+        }
+
+        // Create a single base webhook
+        const webhookSpinner = ora('Creating base webhook...').start();
+        
+        // Create webhook with TMC name
+        const webhooks = await adapter.autoCreateWebhooksForAgents(
+          discordConfig.chatChannelId,
+          [{ id: 'tmc-base', name: 'Too Many Claw', emoji: '🦀', category: AgentCategory.CORE, role: 'Base webhook', model: ModelTier.SONNET }]
+        );
+
+        if (webhooks['tmc-base']) {
+          config.setBaseWebhook(webhooks['tmc-base']);
+          webhookSpinner.succeed('Base webhook created!');
+          console.log(chalk.green(`  All ${AGENT_DEFINITIONS.length} agents will use this webhook with unique names/avatars.\n`));
+        } else {
+          webhookSpinner.fail('Failed to create webhook');
+          console.log(chalk.yellow('\nYou can manually set a webhook URL with: tmc webhook <URL>\n'));
+        }
+
+        await adapter.disconnect();
+      } catch (error) {
+        spinner.fail('Failed to connect to Discord');
+        console.log(chalk.red(`Error: ${error instanceof Error ? error.message : 'Unknown error'}\n`));
+        return;
       }
-    );
-
-    progressSpinner.succeed(`Created webhooks for ${Object.keys(webhooks).length} agents`);
-
-    // Save webhooks to config (batch save for efficiency)
-    const saveSpinner = ora('Saving webhook configuration...').start();
-    const existingWebhooks = config.getAllWebhooks();
-    config.setAllWebhooks({ ...existingWebhooks, ...webhooks });
-    saveSpinner.succeed('Webhook configuration saved');
-
-    // Summary
-    console.log(chalk.green(`\n✅ Successfully configured ${Object.keys(webhooks).length} webhooks!\n`));
-
-    // Check for any missing
-    const missingCount = AGENT_DEFINITIONS.length - Object.keys(webhooks).length;
-    if (missingCount > 0) {
-      console.log(chalk.yellow(`⚠ ${missingCount} webhook(s) could not be created.`));
-      console.log(chalk.gray('  Possible reasons:'));
-      console.log(chalk.gray('  • Discord\'s 15 webhook per channel limit reached'));
-      console.log(chalk.gray('  • Rate limiting from Discord API'));
-      console.log(chalk.gray('  • Webhook already exists with the same name'));
-      console.log(chalk.gray('\n  Consider using multiple channels or a shared webhook for remaining agents.\n'));
     }
 
-  } finally {
-    // Always disconnect
-    const disconnectSpinner = ora('Disconnecting from Discord...').start();
-    await adapter.disconnect();
-    disconnectSpinner.succeed('Disconnected from Discord');
-  }
-}
+    // Step 4: Start daemon?
+    console.log(chalk.cyan('📋 Step 3/3: Daemon Setup\n'));
+    console.log(chalk.gray('The daemon auto-forwards OpenClaw agent responses to Discord.\n'));
+
+    const { startDaemon } = await inquirer.prompt([{
+      type: 'list',
+      name: 'startDaemon',
+      message: 'Start daemon now?',
+      choices: [
+        { name: '🚀 Start daemon in background', value: 'background' },
+        { name: '📺 Start daemon in foreground (see logs)', value: 'foreground' },
+        { name: '⏭️  Skip (start later with `tmc daemon run`)', value: 'skip' },
+      ],
+    }]);
+
+    console.log(chalk.green('\n✨ Setup Complete!\n'));
+    viewConfiguration(config);
+
+    if (startDaemon === 'background') {
+      console.log(chalk.cyan('Starting daemon in background...\n'));
+      const tmcPath = getTmcBinaryPath();
+      const child = spawn(process.execPath, [tmcPath, 'daemon', 'run'], {
+        detached: true,
+        stdio: 'ignore',
+        env: { ...process.env, TMC_DAEMON_CHILD: '1' },
+      });
+      child.unref();
+      if (child.pid) {
+        writePidFile(child.pid);
+        console.log(chalk.green(`✓ Daemon started (PID: ${child.pid})`));
+        console.log(chalk.gray('  Check status: tmc daemon status'));
+        console.log(chalk.gray('  View logs: tmc daemon logs\n'));
+      }
+    } else if (startDaemon === 'foreground') {
+      console.log(chalk.cyan('Starting daemon in foreground...\n'));
+      // Spawn daemon as child process with inherited stdio
+      const tmcPath = getTmcBinaryPath();
+      const child = spawn(process.execPath, [tmcPath, 'daemon', 'run'], {
+        stdio: 'inherit',
+      });
+      child.on('close', (code) => {
+        process.exit(code || 0);
+      });
+      return; // Don't exit, let the child process handle it
+    } else {
+      console.log(chalk.gray('Run `tmc daemon run` to start the daemon later.\n'));
+    }
+  });
+
+
 
 function viewConfiguration(config: ConfigManager): void {
-  console.log(chalk.cyan('\n┌─────────────────────────────────────────────┐'));
-  console.log(chalk.cyan('│        📊 Current Configuration             │'));
-  console.log(chalk.cyan('├─────────────────────────────────────────────┤'));
+  console.log(chalk.cyan('\n━━━ Configuration Status ━━━\n'));
 
   // Discord settings
   const discord = config.getDiscordConfig();
-  const discordStatus = config.isDiscordConfigured() ? chalk.green('✓ Configured') : chalk.yellow('○ Not configured');
-  console.log(chalk.cyan('│') + chalk.white(' Discord Bot: ') + discordStatus.padEnd(35) + chalk.cyan('│'));
-  
+  console.log(chalk.white('Discord:'));
   if (discord.token) {
-    console.log(chalk.cyan('│') + chalk.gray(`   Token: ${discord.token.substring(0, 10)}...`).padEnd(44) + chalk.cyan('│'));
+    console.log(chalk.green(`  ✓ Token: ${discord.token.substring(0, 10)}...`));
+  } else {
+    console.log(chalk.yellow('  ○ Token: not set'));
   }
   if (discord.guildId) {
-    console.log(chalk.cyan('│') + chalk.gray(`   Guild: ${discord.guildId}`).padEnd(44) + chalk.cyan('│'));
+    console.log(chalk.green(`  ✓ Guild: ${discord.guildId}`));
+  } else {
+    console.log(chalk.yellow('  ○ Guild: not set'));
   }
   if (discord.chatChannelId) {
-    console.log(chalk.cyan('│') + chalk.gray(`   Chat Channel: ${discord.chatChannelId}`).padEnd(44) + chalk.cyan('│'));
-  }
-
-  // Webhook stats
-  const webhooks = config.getAllWebhooks();
-  const hasBaseWebhook = config.hasBaseWebhook();
-  const agentWebhookCount = Object.keys(webhooks).filter(id => id !== 'base').length;
-  
-  if (hasBaseWebhook) {
-    console.log(chalk.cyan('│') + chalk.green(` Webhooks: Base webhook configured ✓`).padEnd(44) + chalk.cyan('│'));
-    console.log(chalk.cyan('│') + chalk.gray(`   All ${AGENT_DEFINITIONS.length} agents use shared webhook`).padEnd(44) + chalk.cyan('│'));
-  } else if (agentWebhookCount > 0) {
-    console.log(chalk.cyan('│') + chalk.white(` Webhooks: ${agentWebhookCount}/${AGENT_DEFINITIONS.length} agents`).padEnd(44) + chalk.cyan('│'));
+    console.log(chalk.green(`  ✓ Channel: ${discord.chatChannelId}`));
   } else {
-    console.log(chalk.cyan('│') + chalk.yellow(` Webhooks: Not configured`).padEnd(44) + chalk.cyan('│'));
+    console.log(chalk.yellow('  ○ Channel: not set'));
   }
 
-  console.log(chalk.cyan('└─────────────────────────────────────────────┘\n'));
+  // Webhook status
+  console.log(chalk.white('\nWebhook:'));
+  if (config.hasBaseWebhook()) {
+    console.log(chalk.green(`  ✓ Base webhook configured (${AGENT_DEFINITIONS.length} agents)`));
+  } else {
+    console.log(chalk.yellow('  ○ Not configured'));
+  }
+
+  // Daemon status
+  console.log(chalk.white('\nDaemon:'));
+  const status = getDaemonStatus();
+  if (status.running) {
+    console.log(chalk.green(`  ✓ Running (PID: ${status.pid})`));
+  } else if (status.systemdActive) {
+    console.log(chalk.green('  ✓ Running (systemd)'));
+  } else {
+    console.log(chalk.gray('  ○ Not running'));
+  }
+
+  console.log();
 }
 
-async function resetConfiguration(config: ConfigManager): Promise<void> {
-  const { confirm } = await inquirer.prompt([
-    {
+// Config command to view current config
+program
+  .command('config')
+  .description('View current TMC configuration')
+  .action(() => {
+    const config = new ConfigManager();
+    viewConfiguration(config);
+  });
+
+// Reset command
+program
+  .command('reset')
+  .description('Reset all TMC configuration')
+  .action(async () => {
+    const { confirm } = await inquirer.prompt([{
       type: 'confirm',
       name: 'confirm',
       message: chalk.red('Are you sure you want to reset all configuration?'),
       default: false,
-    },
-  ]);
+    }]);
 
-  if (!confirm) {
-    console.log(chalk.yellow('\nReset cancelled.'));
-    return;
-  }
+    if (!confirm) {
+      console.log(chalk.yellow('\nReset cancelled.\n'));
+      return;
+    }
 
-  const spinner = ora('Resetting configuration...').start();
-  config.reset();
-  spinner.succeed('Configuration reset');
-  console.log(chalk.green('\nAll configuration has been cleared.'));
-}
+    const config = new ConfigManager();
+    config.reset();
+    console.log(chalk.green('\n✓ Configuration reset.\n'));
+  });
 
 // Start Discord bot
 program
@@ -940,18 +559,7 @@ program
     console.log();
   });
 
-// Legacy setup-discord command (redirects to setup)
-program
-  .command('setup-discord')
-  .description('Configure Discord settings (alias for `tmc setup`)')
-  .action(async () => {
-    console.log(chalk.cyan('\n🦀 Too Many Claw - Discord Setup\n'));
-    
-    const config = new ConfigManager();
-    await runDiscordSetup(config);
-    
-    console.log(chalk.gray('\nRun `tmc start` to start the bot.\n'));
-  });
+
 
 // Uninstall
 program
@@ -1933,10 +1541,10 @@ async function handleBackupRestore(config: ConfigManager): Promise<void> {
   }
 }
 
-// Quick webhook set command
+// Quick webhook set command (fallback when bot lacks permission)
 program
   .command('webhook <url>')
-  .description('Set a single shared webhook for all agents')
+  .description('Manually set a shared webhook URL for all agents')
   .action((url: string) => {
     const config = new ConfigManager();
     
@@ -1949,8 +1557,7 @@ program
     config.setBaseWebhook(url);
     
     console.log(chalk.green('\n✓ Base webhook configured!'));
-    console.log(chalk.gray(`  All ${AGENT_DEFINITIONS.length} agents will use this webhook.`));
-    console.log(chalk.gray('  Each agent will appear with their unique name and emoji avatar.\n'));
+    console.log(chalk.gray(`  All ${AGENT_DEFINITIONS.length} agents will use this webhook.\n`));
   });
 
 // List agents command
