@@ -332,13 +332,23 @@ program
     if (!registrationResult.success) {
       agentSpinner.fail('Failed to register agents');
       console.log(chalk.red(`Error: ${registrationResult.error}\n`));
-    } else if (registrationResult.newlyAdded.length > 0) {
-      agentSpinner.succeed(`Registered ${registrationResult.newlyAdded.length} new agent(s)`);
-      console.log(chalk.green(`  • New: ${registrationResult.newlyAdded.slice(0, 5).join(', ')}${registrationResult.newlyAdded.length > 5 ? ` and ${registrationResult.newlyAdded.length - 5} more` : ''}`));
-      console.log(chalk.gray(`  • Already registered: ${registrationResult.alreadyExisted.length} agent(s)\n`));
     } else {
-      agentSpinner.succeed('All agents already registered');
-      console.log(chalk.gray(`  ${registrationResult.totalAgents} agents configured in OpenClaw\n`));
+      if (registrationResult.newlyAdded.length > 0) {
+        agentSpinner.succeed(`Registered ${registrationResult.newlyAdded.length} new agent(s)`);
+        console.log(chalk.green(`  • New: ${registrationResult.newlyAdded.slice(0, 5).join(', ')}${registrationResult.newlyAdded.length > 5 ? ` and ${registrationResult.newlyAdded.length - 5} more` : ''}`));
+        console.log(chalk.gray(`  • Already registered: ${registrationResult.alreadyExisted.length} agent(s)`));
+      } else {
+        agentSpinner.succeed('All agents already registered');
+        console.log(chalk.gray(`  ${registrationResult.totalAgents} agents configured in OpenClaw`));
+      }
+
+      // Show webhook mode status (only on success)
+      if (registrationResult.webhookModeConfigured) {
+        console.log(chalk.green('  ✓ Webhook-only mode enabled'));
+        console.log(chalk.gray('    OpenClaw bot direct replies disabled - only TMC webhooks will respond\n'));
+      } else {
+        console.log(chalk.gray('  • Webhook-only mode already configured\n'));
+      }
     }
 
     // Step 5: Start daemon?
