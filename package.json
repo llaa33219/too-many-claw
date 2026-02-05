@@ -1,6 +1,6 @@
 {
   "name": "too-many-claw",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "OpenClaw extension with 35 AI agents that collaborate via Discord",
   "type": "module",
   "main": "dist/index.js",
@@ -9,7 +9,7 @@
     "tmc": "./dist/cli.js"
   },
   "scripts": {
-    "build": "tsup",
+    "build": "tsup && node -e \"const fs=require('fs');const f='dist/cli.js';const c=fs.readFileSync(f,'utf8');if(!c.startsWith('#!')){fs.writeFileSync(f,'#!/usr/bin/env node\\n'+c)}\"",
     "dev": "tsup --watch",
     "prepublishOnly": "npm run build",
     "postinstall": "node dist/scripts/postinstall.js || true"
