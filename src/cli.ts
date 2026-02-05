@@ -13,6 +13,7 @@ import { AGENT_DEFINITIONS } from './agents/definitions.js';
 import { DiscordAdapter } from './discord/DiscordAdapter.js';
 import { Orchestrator } from './core/Orchestrator.js';
 import { AgentCategory } from './types/index.js';
+import { OpenClawDaemon } from './daemon/index.js';
 
 const program = new Command();
 
@@ -951,6 +952,170 @@ program
       console.log(chalk.gray('   Check the paths above to see where Discord settings are stored.\n'));
     }
   });
+
+// Daemon mode - auto-connect to OpenClaw and forward messages via webhooks
+program
+  .command('daemon')
+  .description('Run daemon mode to auto-connect to OpenClaw and forward agent messages via webhooks')
+  .option('-v, --verbose', 'Enable verbose logging')
+  .option('--url <url>', 'OpenClaw Gateway URL', 'ws://127.0.0.1:18789')
+  .action(async (options) => {
+    console.log(chalk.cyan(`
+╔════════════════════════════════════════════════════════════╗
+║                                                            ║
+║   🦀 Too Many Claw - Daemon Mode                           ║
+║                                                            ║
+║   Auto-connects to OpenClaw and forwards agent messages    ║
+║   through Discord webhooks                                 ║
+║                                                            ║
+╚════════════════════════════════════════════════════════════╝
+`));
+
+    const config = new ConfigManager();
+    
+    // Check if webhooks are configured
+    const webhooks = config.getAllWebhooks();
+    if (Object.keys(webhooks).length === 0) {
+      console.log(chalk.yellow('⚠ No webhooks configured.'));
+      console.log(chalk.gray('  Agent messages will not be forwarded to Discord.'));
+      console.log(chalk.gray('  Run `tmc setup` to configure webhooks.\n'));
+    } else {
+      console.log(chalk.green(`✓ ${Object.keys(webhooks).length} webhooks loaded\n`));
+    }
+
+    const daemon = new OpenClawDaemon({
+      gatewayUrl: options.url,
+      verbose: options.verbose || false,
+      autoStart: true,
+    });
+
+    let statusSpinner = ora('Connecting to OpenClaw Gateway...').start();
+    let statsInterval: NodeJS.Timeout | null = null;
+    let isShuttingDown = false;
+
+    // Connection event handlers
+    daemon.on('connected', () => {
+      statusSpinner.succeed('Connected to OpenClaw Gateway');
+      console.log(chalk.green('\n🦞 Daemon is now running!'));
+      console.log(chalk.gray('  Listening for agent responses...'));
+      console.log(chalk.gray('  Press Ctrl+C to stop.\n'));
+
+      // Start periodic stats display
+      statsInterval = setInterval(() => {
+        const stats = daemon.getStats();
+        if (stats.messagesProcessed > 0 || options.verbose) {
+          const uptime = formatUptime(stats.uptimeMs);
+          console.log(chalk.gray(
+            `[Stats] Uptime: ${uptime} | Messages: ${stats.messagesProcessed} processed, ` +
+            `${stats.messagesForwarded} forwarded | Errors: ${stats.webhookErrors}`
+          ));
+        }
+      }, 30000); // Every 30 seconds
+    });
+
+    daemon.on('disconnected', (reason: string) => {
+      if (!isShuttingDown) {
+        console.log(chalk.yellow(`\n⚠ Disconnected: ${reason}`));
+        statusSpinner = ora('Waiting for OpenClaw Gateway...').start();
+      }
+    });
+
+    daemon.on('reconnecting', (attempt: number) => {
+      statusSpinner.text = `Reconnecting to OpenClaw Gateway... (attempt ${attempt})`;
+    });
+
+    daemon.on('openclaw_detected', () => {
+      if (options.verbose) {
+        console.log(chalk.green('\n✓ OpenClaw process detected'));
+      }
+    });
+
+    daemon.on('openclaw_lost', () => {
+      console.log(chalk.yellow('\n⚠ OpenClaw process no longer detected'));
+      console.log(chalk.gray('  Daemon will auto-reconnect when OpenClaw starts.\n'));
+      statusSpinner = ora('Waiting for OpenClaw...').start();
+    });
+
+    daemon.on('message_forwarded', (agentId: string, content: string) => {
+      if (options.verbose) {
+        const preview = content.length > 50 ? content.substring(0, 50) + '...' : content;
+        console.log(chalk.blue(`  → Forwarded from ${agentId}: ${preview}`));
+      }
+    });
+
+    daemon.on('error', (error: Error) => {
+      if (options.verbose) {
+        console.log(chalk.red(`  ✗ Error: ${error.message}`));
+      }
+    });
+
+    // Graceful shutdown handler
+    const shutdown = async () => {
+      if (isShuttingDown) return;
+      isShuttingDown = true;
+      
+      // Stop any active spinner before printing
+      statusSpinner.stop();
+
+      console.log(chalk.yellow('\n\nShutting down daemon...'));
+      
+      if (statsInterval) {
+        clearInterval(statsInterval);
+      }
+
+      // Print final stats
+      const stats = daemon.getStats();
+      console.log(chalk.cyan('\n━━━ Final Statistics ━━━'));
+      console.log(chalk.white(`  Uptime: ${formatUptime(stats.uptimeMs)}`));
+      console.log(chalk.white(`  Messages processed: ${stats.messagesProcessed}`));
+      console.log(chalk.white(`  Messages forwarded: ${stats.messagesForwarded}`));
+      console.log(chalk.white(`  Webhook errors: ${stats.webhookErrors}`));
+      console.log(chalk.cyan('━━━━━━━━━━━━━━━━━━━━━━━━\n'));
+
+      await daemon.stop();
+      console.log(chalk.green('Daemon stopped. Goodbye! 👋\n'));
+      process.exit(0);
+    };
+
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
+
+    // Start the daemon
+    try {
+      await daemon.start();
+
+      // If we're here and not connected after start, show helpful message
+      if (!daemon.isConnected) {
+        statusSpinner.warn('OpenClaw Gateway not found');
+        console.log(chalk.yellow('\n⚠ Could not connect to OpenClaw Gateway.'));
+        console.log(chalk.gray('\nMake sure OpenClaw is running:'));
+        console.log(chalk.white('  $ openclaw gateway run\n'));
+        console.log(chalk.gray('The daemon will keep trying to connect...'));
+        statusSpinner = ora('Waiting for OpenClaw Gateway...').start();
+      }
+    } catch (error) {
+      statusSpinner.fail('Failed to start daemon');
+      console.error(chalk.red(`\nError: ${error instanceof Error ? error.message : 'Unknown error'}`));
+      process.exit(1);
+    }
+  });
+
+/**
+ * Format uptime in human-readable format
+ */
+function formatUptime(ms: number): string {
+  const seconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  
+  if (hours > 0) {
+    return `${hours}h ${minutes % 60}m ${seconds % 60}s`;
+  } else if (minutes > 0) {
+    return `${minutes}m ${seconds % 60}s`;
+  } else {
+    return `${seconds}s`;
+  }
+}
 
 // List agents command
 program

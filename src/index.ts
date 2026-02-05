@@ -21,3 +21,9 @@ export { TerminalAdapter, TerminalUI } from './simulation/index.js';
 
 // Configuration
 export { ConfigManager } from './config/index.js';
+
+// OpenClaw Integration
+export { GatewayClient, GatewayClientConfig, GatewayMessage, ConnectionState } from './openclaw/index.js';
+
+// Daemon
+export { OpenClawDaemon, DaemonConfig, DaemonStats } from './daemon/index.js';
