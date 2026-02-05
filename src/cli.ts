@@ -19,7 +19,7 @@ const program = new Command();
 program
   .name('tmc')
   .description('Too Many Claw - 35 AI agents collaborating via Discord')
-  .version('1.0.2');
+  .version('1.0.4');
 
 // Comprehensive setup wizard
 program
@@ -37,22 +37,28 @@ program
 `));
 
     const config = new ConfigManager();
-    const currentDiscord = config.getDiscordConfig();
 
-    // Step 1: Main menu
+    // Check for OpenClaw Discord configuration
+    await checkAndImportOpenClaw(config);
+
+    // Build menu choices (conditionally include OpenClaw option)
+    const menuChoices = [
+      { name: '🔧 Full Setup (Recommended for first time)', value: 'full' },
+      { name: '🤖 Discord Bot Settings', value: 'discord' },
+      { name: '🔗 Webhook Configuration', value: 'webhooks' },
+      ...(config.hasOpenClawConfig() ? [{ name: '📥 Import from OpenClaw', value: 'openclaw' }] : []),
+      { name: '📊 View Current Configuration', value: 'view' },
+      { name: '🗑️  Reset Configuration', value: 'reset' },
+      { name: '❌ Exit', value: 'exit' },
+    ];
+
+    // Main menu
     const { setupType } = await inquirer.prompt([
       {
         type: 'list',
         name: 'setupType',
         message: 'What would you like to configure?',
-        choices: [
-          { name: '🔧 Full Setup (Recommended for first time)', value: 'full' },
-          { name: '🤖 Discord Bot Settings', value: 'discord' },
-          { name: '🔗 Webhook Configuration', value: 'webhooks' },
-          { name: '📊 View Current Configuration', value: 'view' },
-          { name: '🗑️  Reset Configuration', value: 'reset' },
-          { name: '❌ Exit', value: 'exit' },
-        ],
+        choices: menuChoices,
       },
     ]);
 
@@ -66,6 +72,9 @@ program
       case 'webhooks':
         await runWebhookSetup(config);
         break;
+      case 'openclaw':
+        await importFromOpenClawManual(config);
+        break;
       case 'view':
         viewConfiguration(config);
         break;
@@ -78,17 +87,150 @@ program
     }
   });
 
-async function runFullSetup(config: ConfigManager): Promise<void> {
-  console.log(chalk.cyan('\n📋 Step 1/3: Discord Bot Configuration\n'));
-  console.log(chalk.gray('To use Too Many Claw, you need a Discord bot. Here\'s how to get one:'));
-  console.log(chalk.gray('  1. Go to https://discord.com/developers/applications'));
-  console.log(chalk.gray('  2. Create a new application'));
-  console.log(chalk.gray('  3. Go to the "Bot" tab and create a bot'));
-  console.log(chalk.gray('  4. Copy the bot token'));
-  console.log(chalk.gray('  5. Enable "Message Content Intent" in the Bot settings'));
-  console.log(chalk.gray('  6. Invite the bot to your server with appropriate permissions\n'));
+/**
+ * Check for OpenClaw config and offer to import at setup start
+ */
+async function checkAndImportOpenClaw(config: ConfigManager): Promise<boolean> {
+  if (!config.hasOpenClawDiscordConfig()) {
+    return false;
+  }
 
-  await runDiscordSetup(config);
+  // OpenClaw Discord config detected!
+  console.log(chalk.green('┌─────────────────────────────────────────────────────────────┐'));
+  console.log(chalk.green('│  ✨ OpenClaw Discord configuration detected!                │'));
+  console.log(chalk.green('└─────────────────────────────────────────────────────────────┘'));
+
+  const openclawDiscord = config.getOpenClawDiscordConfig();
+  if (!openclawDiscord) return false;
+
+  // Show what can be imported
+  console.log(chalk.white('\nThe following settings can be imported:\n'));
+  
+  if (openclawDiscord.token) {
+    const maskedToken = openclawDiscord.token.substring(0, 10) + '...' + openclawDiscord.token.slice(-4);
+    console.log(chalk.gray(`  • Bot Token: ${maskedToken}`));
+  }
+  if (openclawDiscord.allowlist?.channels && openclawDiscord.allowlist.channels.length > 0) {
+    console.log(chalk.gray(`  • Allowed Channels: ${openclawDiscord.allowlist.channels.length} channel(s)`));
+    openclawDiscord.allowlist.channels.forEach((ch, i) => {
+      const label = i === 0 ? '(will use as chat channel)' : i === 1 ? '(will use as status channel)' : '';
+      console.log(chalk.gray(`      - ${ch} ${label}`));
+    });
+  }
+  console.log();
+
+  const { shouldImport } = await inquirer.prompt([
+    {
+      type: 'confirm',
+      name: 'shouldImport',
+      message: 'Would you like to import these settings from OpenClaw?',
+      default: true,
+    },
+  ]);
+
+  if (!shouldImport) {
+    console.log(chalk.gray('\nSkipped OpenClaw import.\n'));
+    return false;
+  }
+
+  // Perform import
+  const result = config.importFromOpenClaw();
+
+  if (result.success) {
+    console.log(chalk.green('\n✓ Import successful!\n'));
+    console.log(chalk.white('Imported settings:'));
+    if (result.imported.token) {
+      console.log(chalk.green('  ✓ Bot Token'));
+    }
+    if (result.imported.chatChannelId) {
+      console.log(chalk.green(`  ✓ Chat Channel: ${result.imported.chatChannelId}`));
+    }
+    if (result.imported.statusChannelId) {
+      console.log(chalk.green(`  ✓ Status Channel: ${result.imported.statusChannelId}`));
+    }
+    console.log();
+
+    // Check what's still needed
+    const currentConfig = config.getDiscordConfig();
+    const missing: string[] = [];
+    if (!currentConfig.guildId) missing.push('Server (Guild) ID');
+    if (!currentConfig.chatChannelId) missing.push('Chat Channel ID');
+
+    if (missing.length > 0) {
+      console.log(chalk.yellow('⚠ The following settings still need to be configured:'));
+      missing.forEach(m => console.log(chalk.yellow(`  • ${m}`)));
+      console.log();
+    }
+  } else {
+    console.log(chalk.yellow(`\n⚠ ${result.message}\n`));
+  }
+
+  return result.success;
+}
+
+/**
+ * Manual import from OpenClaw (menu option)
+ */
+async function importFromOpenClawManual(config: ConfigManager): Promise<void> {
+  console.log(chalk.cyan('\n📥 Import from OpenClaw\n'));
+
+  if (!config.hasOpenClawConfig()) {
+    console.log(chalk.yellow('OpenClaw configuration file not found.'));
+    console.log(chalk.gray(`Expected location: ${config.getOpenClawConfigPath()}`));
+    console.log(chalk.gray('\nMake sure OpenClaw is installed and configured.\n'));
+    return;
+  }
+
+  if (!config.hasOpenClawDiscordConfig()) {
+    console.log(chalk.yellow('OpenClaw is installed but has no Discord configuration.'));
+    console.log(chalk.gray('\nPlease configure Discord in OpenClaw first, then try again.\n'));
+    return;
+  }
+
+  await checkAndImportOpenClaw(config);
+}
+
+async function runFullSetup(config: ConfigManager): Promise<void> {
+  // Check if Discord is already configured (possibly from OpenClaw import)
+  const currentDiscord = config.getDiscordConfig();
+  const hasToken = !!currentDiscord.token;
+  const hasGuild = !!currentDiscord.guildId;
+  const hasChatChannel = !!currentDiscord.chatChannelId;
+
+  if (hasToken && hasGuild && hasChatChannel) {
+    console.log(chalk.green('\n✓ Discord is already configured!\n'));
+    const { reconfigure } = await inquirer.prompt([
+      {
+        type: 'confirm',
+        name: 'reconfigure',
+        message: 'Would you like to reconfigure Discord settings?',
+        default: false,
+      },
+    ]);
+
+    if (!reconfigure) {
+      console.log(chalk.cyan('\n📋 Step 1/3: Discord Bot Configuration - Skipped\n'));
+    } else {
+      console.log(chalk.cyan('\n📋 Step 1/3: Discord Bot Configuration\n'));
+      await runDiscordSetup(config);
+    }
+  } else {
+    console.log(chalk.cyan('\n📋 Step 1/3: Discord Bot Configuration\n'));
+    
+    if (hasToken) {
+      console.log(chalk.green('✓ Bot token already configured (imported from OpenClaw)\n'));
+    } else {
+      console.log(chalk.gray('To use Too Many Claw, you need a Discord bot. Here\'s how to get one:'));
+      console.log(chalk.gray('  1. Go to https://discord.com/developers/applications'));
+      console.log(chalk.gray('  2. Create a new application'));
+      console.log(chalk.gray('  3. Go to the "Bot" tab and create a bot'));
+      console.log(chalk.gray('  4. Copy the bot token'));
+      console.log(chalk.gray('  5. Enable "Message Content Intent" in the Bot settings'));
+      console.log(chalk.gray('  6. Invite the bot to your server with appropriate permissions\n'));
+    }
+
+    await runDiscordSetup(config);
+  }
 
   console.log(chalk.cyan('\n📋 Step 2/3: Webhook Configuration (Optional)\n'));
   console.log(chalk.gray('Webhooks allow each agent to have a unique name and avatar.'));
@@ -120,11 +262,26 @@ async function runFullSetup(config: ConfigManager): Promise<void> {
 async function runDiscordSetup(config: ConfigManager): Promise<void> {
   const currentDiscord = config.getDiscordConfig();
 
+  // Show which fields are pre-filled
+  if (currentDiscord.token || currentDiscord.guildId || currentDiscord.chatChannelId) {
+    console.log(chalk.gray('Pre-filled values (press Enter to keep, or type new value):\n'));
+    if (currentDiscord.token) {
+      console.log(chalk.gray(`  • Token: ${currentDiscord.token.substring(0, 10)}...`));
+    }
+    if (currentDiscord.guildId) {
+      console.log(chalk.gray(`  • Guild ID: ${currentDiscord.guildId}`));
+    }
+    if (currentDiscord.chatChannelId) {
+      console.log(chalk.gray(`  • Chat Channel: ${currentDiscord.chatChannelId}`));
+    }
+    console.log();
+  }
+
   const answers = await inquirer.prompt([
     {
       type: 'password',
       name: 'token',
-      message: 'Discord Bot Token:',
+      message: currentDiscord.token ? 'Discord Bot Token (press Enter to keep current):' : 'Discord Bot Token:',
       default: currentDiscord.token || '',
       mask: '*',
       validate: (input: string) => {
@@ -137,7 +294,7 @@ async function runDiscordSetup(config: ConfigManager): Promise<void> {
     {
       type: 'input',
       name: 'guildId',
-      message: 'Discord Server (Guild) ID:',
+      message: currentDiscord.guildId ? 'Discord Server (Guild) ID (press Enter to keep current):' : 'Discord Server (Guild) ID:',
       default: currentDiscord.guildId || '',
       validate: (input: string) => {
         if (!input || !/^\d{17,19}$/.test(input)) {
@@ -149,7 +306,7 @@ async function runDiscordSetup(config: ConfigManager): Promise<void> {
     {
       type: 'input',
       name: 'chatChannelId',
-      message: 'Chat Channel ID (main conversation channel):',
+      message: currentDiscord.chatChannelId ? 'Chat Channel ID (press Enter to keep current):' : 'Chat Channel ID (main conversation channel):',
       default: currentDiscord.chatChannelId || '',
       validate: (input: string) => {
         if (!input || !/^\d{17,19}$/.test(input)) {

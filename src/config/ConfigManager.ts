@@ -13,6 +13,26 @@ export interface DiscordConfig {
   statusChannelId?: string;
 }
 
+/**
+ * OpenClaw configuration structure (partial - only what we need)
+ */
+export interface OpenClawDiscordConfig {
+  token?: string;
+  intents?: string[];
+  allowlist?: {
+    channels?: string[];
+    users?: string[];
+  };
+}
+
+export interface OpenClawGatewayConfig {
+  discord?: OpenClawDiscordConfig;
+}
+
+export interface OpenClawConfig {
+  gateway?: OpenClawGatewayConfig;
+}
+
 export interface TooManyClawConfig {
   discord: DiscordConfig;
   webhooks: Record<string, string>;
@@ -31,11 +51,13 @@ const DEFAULT_CONFIG: TooManyClawConfig = {
 
 export class ConfigManager {
   private configPath: string;
+  private openclawConfigPath: string;
   private config: TooManyClawConfig;
 
   constructor() {
     const openclawDir = path.join(os.homedir(), '.openclaw');
     this.configPath = path.join(openclawDir, 'too-many-claw.json');
+    this.openclawConfigPath = path.join(openclawDir, 'openclaw.json');
     this.config = this.load();
   }
 
@@ -153,5 +175,105 @@ export class ConfigManager {
     } catch {
       // Ignore errors
     }
+  }
+
+  // ============================================
+  // OpenClaw Integration
+  // ============================================
+
+  /**
+   * Check if OpenClaw config file exists
+   */
+  hasOpenClawConfig(): boolean {
+    return fs.existsSync(this.openclawConfigPath);
+  }
+
+  /**
+   * Read OpenClaw configuration file
+   */
+  readOpenClawConfig(): OpenClawConfig | null {
+    try {
+      if (!this.hasOpenClawConfig()) {
+        return null;
+      }
+      return fs.readJsonSync(this.openclawConfigPath) as OpenClawConfig;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Check if OpenClaw has Discord configuration
+   */
+  hasOpenClawDiscordConfig(): boolean {
+    const config = this.readOpenClawConfig();
+    return !!(config?.gateway?.discord?.token);
+  }
+
+  /**
+   * Get Discord settings from OpenClaw config
+   */
+  getOpenClawDiscordConfig(): OpenClawDiscordConfig | null {
+    const config = this.readOpenClawConfig();
+    return config?.gateway?.discord ?? null;
+  }
+
+  /**
+   * Import Discord settings from OpenClaw configuration
+   * Returns true if successful, false if no OpenClaw Discord config found
+   */
+  importFromOpenClaw(): { success: boolean; imported: Partial<DiscordConfig>; message: string } {
+    const openclawDiscord = this.getOpenClawDiscordConfig();
+
+    if (!openclawDiscord) {
+      return {
+        success: false,
+        imported: {},
+        message: 'No OpenClaw Discord configuration found',
+      };
+    }
+
+    const imported: Partial<DiscordConfig> = {};
+
+    // Import token
+    if (openclawDiscord.token) {
+      imported.token = openclawDiscord.token;
+    }
+
+    // Import allowed channels (first as chat, second as status if available)
+    if (openclawDiscord.allowlist?.channels && openclawDiscord.allowlist.channels.length > 0) {
+      imported.chatChannelId = openclawDiscord.allowlist.channels[0];
+      if (openclawDiscord.allowlist.channels.length > 1) {
+        imported.statusChannelId = openclawDiscord.allowlist.channels[1];
+      }
+    }
+
+    if (Object.keys(imported).length === 0) {
+      return {
+        success: false,
+        imported: {},
+        message: 'OpenClaw Discord config exists but has no usable settings',
+      };
+    }
+
+    // Merge: imported values take precedence over existing
+    const currentDiscord = this.getDiscordConfig();
+    this.setDiscordConfig({
+      ...currentDiscord, // Base: existing settings
+      ...imported,       // Override with imported values
+    });
+
+    return {
+      success: true,
+      imported,
+      message: `Imported ${Object.keys(imported).length} setting(s) from OpenClaw`,
+    };
+  }
+
+  /**
+   * Get OpenClaw config file path
+   */
+  getOpenClawConfigPath(): string {
+    return this.openclawConfigPath;
   }
 }
