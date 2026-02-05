@@ -505,8 +505,8 @@ async function runWebhookSetup(config: ConfigManager): Promise<void> {
 
   // Build choices - auto-create only available if Discord is configured
   const choices = [
+    { name: '📝 Use a single shared webhook (Recommended - avoids 15 webhook limit)', value: 'single' },
     ...(hasDiscordConfig ? [{ name: '🤖 Auto-create webhooks (requires bot connection)', value: 'auto' }] : []),
-    { name: '📝 Use a single webhook for all agents', value: 'single' },
     { name: '📁 Configure webhooks per category', value: 'category' },
     { name: '🔧 Configure webhooks per agent', value: 'individual' },
     { name: '⏭️  Skip webhook configuration', value: 'skip' },
@@ -545,6 +545,10 @@ async function runWebhookSetup(config: ConfigManager): Promise<void> {
   console.log(chalk.gray('  3. Create a new webhook and copy its URL\n'));
 
   if (webhookMode === 'single') {
+    console.log(chalk.cyan('\n💡 Recommended: Single webhook with dynamic usernames'));
+    console.log(chalk.gray('Each agent will appear with their own name and emoji avatar,'));
+    console.log(chalk.gray('but all messages go through one webhook (avoids 15 webhook limit).\n'));
+    
     const { webhookUrl } = await inquirer.prompt([
       {
         type: 'input',
@@ -559,11 +563,10 @@ async function runWebhookSetup(config: ConfigManager): Promise<void> {
       },
     ]);
 
-    // Apply to all agents
-    for (const agent of AGENT_DEFINITIONS) {
-      config.setWebhook(agent.id, webhookUrl);
-    }
-    console.log(chalk.green(`\n✓ Webhook set for all ${AGENT_DEFINITIONS.length} agents`));
+    // Set as base webhook (single webhook for all agents)
+    config.setBaseWebhook(webhookUrl);
+    console.log(chalk.green(`\n✓ Base webhook set for all ${AGENT_DEFINITIONS.length} agents`));
+    console.log(chalk.gray('  Each agent will use their unique name and emoji as avatar.'));
   }
 
   if (webhookMode === 'category') {
@@ -789,8 +792,17 @@ function viewConfiguration(config: ConfigManager): void {
 
   // Webhook stats
   const webhooks = config.getAllWebhooks();
-  const webhookCount = Object.keys(webhooks).length;
-  console.log(chalk.cyan('│') + chalk.white(` Webhooks: ${webhookCount}/${AGENT_DEFINITIONS.length} agents`).padEnd(44) + chalk.cyan('│'));
+  const hasBaseWebhook = config.hasBaseWebhook();
+  const agentWebhookCount = Object.keys(webhooks).filter(id => id !== 'base').length;
+  
+  if (hasBaseWebhook) {
+    console.log(chalk.cyan('│') + chalk.green(` Webhooks: Base webhook configured ✓`).padEnd(44) + chalk.cyan('│'));
+    console.log(chalk.cyan('│') + chalk.gray(`   All ${AGENT_DEFINITIONS.length} agents use shared webhook`).padEnd(44) + chalk.cyan('│'));
+  } else if (agentWebhookCount > 0) {
+    console.log(chalk.cyan('│') + chalk.white(` Webhooks: ${agentWebhookCount}/${AGENT_DEFINITIONS.length} agents`).padEnd(44) + chalk.cyan('│'));
+  } else {
+    console.log(chalk.cyan('│') + chalk.yellow(` Webhooks: Not configured`).padEnd(44) + chalk.cyan('│'));
+  }
 
   console.log(chalk.cyan('└─────────────────────────────────────────────┘\n'));
 }
@@ -1715,16 +1727,22 @@ program
 
     // Display webhook status
     const webhooks = config.getAllWebhooks();
-    const webhookCount = Object.keys(webhooks).length;
+    const hasBaseWebhook = config.hasBaseWebhook();
+    const agentWebhookCount = Object.keys(webhooks).filter(id => id !== 'base').length;
+    
     console.log(chalk.white('\nWebhooks:'));
-    console.log(chalk.gray(`  • ${webhookCount} webhook(s) configured`));
+    if (hasBaseWebhook) {
+      console.log(chalk.green('  ✓ Base webhook configured (all agents use shared webhook)'));
+    } else {
+      console.log(chalk.gray(`  • ${agentWebhookCount} agent-specific webhook(s) configured`));
+    }
     
     if (report.invalidWebhooks.length > 0) {
       console.log(chalk.red(`  ✗ ${report.invalidWebhooks.length} invalid webhook(s) found:`));
       report.invalidWebhooks.forEach(agentId => {
         console.log(chalk.red(`    - ${agentId}`));
       });
-    } else if (webhookCount > 0) {
+    } else if (hasBaseWebhook || agentWebhookCount > 0) {
       console.log(chalk.green('  ✓ All webhooks valid'));
     }
 
@@ -1914,6 +1932,26 @@ async function handleBackupRestore(config: ConfigManager): Promise<void> {
     console.log(chalk.red('\nThe backup file may be corrupted or inaccessible.\n'));
   }
 }
+
+// Quick webhook set command
+program
+  .command('webhook <url>')
+  .description('Set a single shared webhook for all agents')
+  .action((url: string) => {
+    const config = new ConfigManager();
+    
+    if (!config.validateWebhook(url)) {
+      console.log(chalk.red('\n❌ Invalid Discord webhook URL'));
+      console.log(chalk.gray('URL should look like: https://discord.com/api/webhooks/123456789/abcdef...\n'));
+      process.exit(1);
+    }
+
+    config.setBaseWebhook(url);
+    
+    console.log(chalk.green('\n✓ Base webhook configured!'));
+    console.log(chalk.gray(`  All ${AGENT_DEFINITIONS.length} agents will use this webhook.`));
+    console.log(chalk.gray('  Each agent will appear with their unique name and emoji avatar.\n'));
+  });
 
 // List agents command
 program

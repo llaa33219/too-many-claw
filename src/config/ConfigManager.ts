@@ -248,6 +248,29 @@ export class ConfigManager {
   }
 
   /**
+   * Set the base webhook URL (used for all agents with dynamic username/avatar)
+   * This is the recommended approach to avoid Discord's 15 webhook per channel limit
+   */
+  setBaseWebhook(webhookUrl: string): void {
+    this.config.webhooks['base'] = webhookUrl;
+    this.save();
+  }
+
+  /**
+   * Get the base webhook URL
+   */
+  getBaseWebhook(): string | undefined {
+    return this.config.webhooks['base'];
+  }
+
+  /**
+   * Check if base webhook is configured
+   */
+  hasBaseWebhook(): boolean {
+    return !!this.config.webhooks['base'];
+  }
+
+  /**
    * Get config file path
    */
   getConfigPath(): string {

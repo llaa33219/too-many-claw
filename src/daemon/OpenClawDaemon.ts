@@ -291,10 +291,24 @@ export class OpenClawDaemon extends EventEmitter {
    */
   private loadWebhooks(): void {
     const webhooks = this.configManager.getAllWebhooks();
-    if (Object.keys(webhooks).length > 0) {
-      this.webhookManager.setWebhooks(webhooks);
-      this.log(`Loaded ${Object.keys(webhooks).length} webhooks`);
-    } else {
+    
+    // Check for base webhook first (recommended single-webhook approach)
+    if (webhooks['base']) {
+      this.webhookManager.setBaseWebhook(webhooks['base']);
+      this.log('Loaded base webhook for all agents');
+    }
+    
+    // Also load any agent-specific webhooks
+    const agentWebhooks = Object.entries(webhooks).filter(([id]) => id !== 'base');
+    if (agentWebhooks.length > 0) {
+      for (const [agentId, url] of agentWebhooks) {
+        this.webhookManager.setWebhook(agentId, url);
+      }
+      this.log(`Loaded ${agentWebhooks.length} agent-specific webhooks`);
+    }
+    
+    // Warning if no webhooks at all
+    if (!webhooks['base'] && agentWebhooks.length === 0) {
       this.log('No webhooks configured - messages will not be forwarded to Discord');
     }
   }
@@ -470,23 +484,18 @@ export class OpenClawDaemon extends EventEmitter {
 
   /**
    * Forward a message to Discord via webhook
+   * Uses sendAsAgentDirect to pass agent info directly, allowing base webhook to use correct username/avatar
    */
   private async forwardToWebhook(agent: AgentDefinition, content: string): Promise<void> {
-    let webhookAgentId = agent.id;
-    
-    if (!this.webhookManager.hasWebhook(agent.id)) {
-      // No webhook for this agent, try using the default/base webhook
-      if (!this.webhookManager.hasWebhook('base')) {
-        this.log(`No webhook available for agent: ${agent.id}`);
-        return;
-      }
-      // Fall back to base agent's webhook
-      webhookAgentId = 'base';
-      this.log(`Using base webhook for agent: ${agent.id}`);
+    // Check if we can send via any webhook (agent-specific or base)
+    if (!this.webhookManager.canSend(agent.id)) {
+      this.log(`No webhook available for agent: ${agent.id}`);
+      return;
     }
 
     try {
-      await this.webhookManager.sendAsAgent(webhookAgentId, content);
+      // Use sendAsAgentDirect to ensure correct username/avatar even with base webhook
+      await this.webhookManager.sendAsAgentDirect(agent, content);
       this.messagesForwarded++;
       this.emit('message_forwarded', agent.id, content);
       this.log(`Forwarded message from ${agent.emoji} ${agent.name}`);
