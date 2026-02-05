@@ -1,6 +1,6 @@
 {
   "name": "too-many-claw",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "OpenClaw extension with 35 AI agents that collaborate via Discord",
   "type": "module",
   "main": "dist/index.js",
@@ -19,7 +19,7 @@
   },
   "keywords": ["openclaw", "ai", "agents", "discord", "collaboration", "claude"],
   "author": "",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/llaa33219/too-many-claw.git"

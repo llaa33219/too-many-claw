@@ -3,7 +3,7 @@
 > OpenClaw 확장 - 35개의 AI 에이전트가 유동적으로 협업하는 시스템
 
 [![npm version](https://badge.fury.io/js/too-many-claw.svg)](https://www.npmjs.com/package/too-many-claw)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
 ## ✨ 특징
 
@@ -218,4 +218,4 @@ npm publish --access public
 
 ## 📄 라이선스
 
-MIT © 2024
+Apache 2.0 © 2024
