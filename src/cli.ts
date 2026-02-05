@@ -823,6 +823,120 @@ program
     }
   });
 
+// Debug command for diagnosing OpenClaw config issues
+program
+  .command('debug')
+  .description('Debug OpenClaw configuration detection')
+  .option('--raw', 'Show raw config (WARNING: may expose sensitive data)')
+  .action((options) => {
+    console.log(chalk.cyan('\n🔍 Too Many Claw - Debug Information\n'));
+    
+    const config = new ConfigManager();
+    
+    // 1. OpenClaw config file info
+    console.log(chalk.yellow('━━━ OpenClaw Configuration ━━━\n'));
+    const openclawPath = config.getOpenClawConfigPath();
+    console.log(chalk.white('Config file path:'));
+    console.log(chalk.gray(`  ${openclawPath}`));
+    console.log(chalk.white('File exists:'), config.hasOpenClawConfig() ? chalk.green('Yes') : chalk.red('No'));
+    
+    if (config.hasOpenClawConfig()) {
+      // 2. Raw config structure
+      const rawConfig = config.getOpenClawRawConfig();
+      
+      if (rawConfig) {
+        console.log(chalk.white('\nTop-level keys:'));
+        const topKeys = Object.keys(rawConfig);
+        topKeys.forEach(key => {
+          const value = rawConfig[key];
+          const valueType = Array.isArray(value) ? 'array' : typeof value;
+          const subKeys = valueType === 'object' && value ? Object.keys(value as object) : [];
+          console.log(chalk.gray(`  • ${key} (${valueType})${subKeys.length > 0 ? ': ' + subKeys.join(', ') : ''}`));
+        });
+        
+        // Check specific Discord-related paths
+        console.log(chalk.white('\nDiscord config paths checked:'));
+        const paths = [
+          { path: 'gateway.discord', value: (rawConfig as any)?.gateway?.discord },
+          { path: 'channels.discord', value: (rawConfig as any)?.channels?.discord },
+          { path: 'discord', value: (rawConfig as any)?.discord },
+          { path: 'providers.discord', value: (rawConfig as any)?.providers?.discord },
+        ];
+        
+        paths.forEach(({ path, value }) => {
+          if (value) {
+            const keys = typeof value === 'object' ? Object.keys(value) : [];
+            console.log(chalk.green(`  ✓ ${path}`) + chalk.gray(` (keys: ${keys.join(', ') || 'none'})`));
+          } else {
+            console.log(chalk.gray(`  ○ ${path} - not found`));
+          }
+        });
+        
+        // Show raw config if requested (with warning)
+        if (options.raw) {
+          console.log(chalk.yellow('\n⚠ Raw OpenClaw config (may contain sensitive data):'));
+          console.log(chalk.gray(JSON.stringify(rawConfig, null, 2)));
+        }
+      }
+    }
+    
+    // 3. What TMC is extracting
+    console.log(chalk.yellow('\n━━━ TMC OpenClaw Detection ━━━\n'));
+    console.log(chalk.white('hasOpenClawConfig():'), config.hasOpenClawConfig() ? chalk.green('true') : chalk.red('false'));
+    console.log(chalk.white('hasOpenClawDiscordConfig():'), config.hasOpenClawDiscordConfig() ? chalk.green('true') : chalk.red('false'));
+    
+    const extracted = config.extractOpenClawDiscordSettings();
+    if (extracted) {
+      console.log(chalk.white('\nExtracted Discord settings:'));
+      if (extracted.token) {
+        const masked = extracted.token.substring(0, 10) + '...' + extracted.token.slice(-4);
+        console.log(chalk.green(`  ✓ token: ${masked}`));
+      } else {
+        console.log(chalk.gray('  ○ token: not found'));
+      }
+      console.log(extracted.guildId ? chalk.green(`  ✓ guildId: ${extracted.guildId}`) : chalk.gray('  ○ guildId: not found'));
+      console.log(extracted.chatChannelId ? chalk.green(`  ✓ chatChannelId: ${extracted.chatChannelId}`) : chalk.gray('  ○ chatChannelId: not found'));
+      console.log(extracted.statusChannelId ? chalk.green(`  ✓ statusChannelId: ${extracted.statusChannelId}`) : chalk.gray('  ○ statusChannelId: not found'));
+      if (extracted.allowedChannels && extracted.allowedChannels.length > 0) {
+        console.log(chalk.green(`  ✓ allowedChannels: ${extracted.allowedChannels.join(', ')}`));
+      }
+    } else {
+      console.log(chalk.gray('\nNo Discord settings could be extracted from OpenClaw config.'));
+    }
+    
+    // 4. Current TMC config
+    console.log(chalk.yellow('\n━━━ Current TMC Configuration ━━━\n'));
+    const tmcConfig = config.getDiscordConfig();
+    const webhooks = config.getAllWebhooks();
+    
+    console.log(chalk.white('Discord settings:'));
+    if (tmcConfig.token) {
+      const masked = tmcConfig.token.substring(0, 10) + '...' + tmcConfig.token.slice(-4);
+      console.log(chalk.gray(`  • token: ${masked}`));
+    } else {
+      console.log(chalk.gray('  • token: not set'));
+    }
+    console.log(chalk.gray(`  • guildId: ${tmcConfig.guildId || 'not set'}`));
+    console.log(chalk.gray(`  • chatChannelId: ${tmcConfig.chatChannelId || 'not set'}`));
+    console.log(chalk.gray(`  • statusChannelId: ${tmcConfig.statusChannelId || 'not set'}`));
+    console.log(chalk.white('\nWebhooks configured:'), Object.keys(webhooks).length);
+    console.log(chalk.white('Discord fully configured:'), config.isDiscordConfigured() ? chalk.green('Yes') : chalk.yellow('No'));
+    
+    console.log(chalk.cyan('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'));
+    
+    // Helpful tips
+    if (!config.hasOpenClawConfig()) {
+      console.log(chalk.yellow('💡 Tip: OpenClaw config not found. Make sure OpenClaw is installed and run `openclaw onboard` first.\n'));
+    } else if (!config.hasOpenClawDiscordConfig()) {
+      console.log(chalk.yellow('💡 Tip: OpenClaw config exists but no Discord token found.'));
+      console.log(chalk.gray('   The config structure may be different than expected.'));
+      console.log(chalk.gray('   Please share the output above (without --raw) to help diagnose.\n'));
+    } else if (!extracted?.token) {
+      console.log(chalk.yellow('💡 Tip: Discord config detected but token not extracted.'));
+      console.log(chalk.gray('   Check the paths above to see where Discord settings are stored.\n'));
+    }
+  });
+
 // List agents command
 program
   .command('agents')

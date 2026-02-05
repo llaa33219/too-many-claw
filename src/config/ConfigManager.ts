@@ -49,10 +49,25 @@ export interface OpenClawGatewayConfig {
   discord?: OpenClawDiscordConfig;
 }
 
+/**
+ * OpenClaw channels configuration
+ * Discord settings may be stored under channels.discord
+ */
+export interface OpenClawChannelsConfig {
+  discord?: OpenClawDiscordConfig & {
+    /** Channel in format "guildId/channelId" or just channelId */
+    channel?: string;
+    /** Array of channels in format "guildId/channelId" */
+    channels?: string[];
+  };
+}
+
 export interface OpenClawConfig {
   gateway?: OpenClawGatewayConfig;
   /** Some configs may store discord at root level */
   discord?: OpenClawDiscordConfig;
+  /** OpenClaw often stores Discord config under channels.discord */
+  channels?: OpenClawChannelsConfig;
 }
 
 /**
@@ -241,7 +256,12 @@ export class ConfigManager {
    */
   hasOpenClawDiscordConfig(): boolean {
     const config = this.readOpenClawConfig();
-    return !!(config?.gateway?.discord?.token);
+    // Check all possible locations for Discord config
+    return !!(
+      config?.gateway?.discord?.token ||
+      config?.discord?.token ||
+      config?.channels?.discord?.token
+    );
   }
 
   /**
@@ -249,8 +269,27 @@ export class ConfigManager {
    */
   getOpenClawDiscordConfig(): OpenClawDiscordConfig | null {
     const config = this.readOpenClawConfig();
-    // Check both gateway.discord and root discord
-    return config?.gateway?.discord ?? config?.discord ?? null;
+    // Check all possible locations: gateway.discord, channels.discord, root discord
+    return config?.gateway?.discord ?? config?.channels?.discord ?? config?.discord ?? null;
+  }
+
+  /**
+   * Parse a channel string that may be in "guildId/channelId" format
+   * Returns { guildId, channelId } or just { channelId } if no slash
+   */
+  private parseChannelString(channelStr: string): { guildId?: string; channelId: string } {
+    if (channelStr.includes('/')) {
+      const [guildId, channelId] = channelStr.split('/');
+      return { guildId, channelId };
+    }
+    return { channelId: channelStr };
+  }
+
+  /**
+   * Get the full OpenClaw config for debugging
+   */
+  getOpenClawRawConfig(): Record<string, unknown> | null {
+    return this.readOpenClawConfig() as Record<string, unknown> | null;
   }
 
   /**
@@ -258,48 +297,126 @@ export class ConfigManager {
    * Returns a clean, normalized structure regardless of how OpenClaw stores it
    */
   extractOpenClawDiscordSettings(): ExtractedDiscordSettings | null {
+    const config = this.readOpenClawConfig();
+    if (!config) return null;
+
+    // Get Discord config from all possible locations
     const discord = this.getOpenClawDiscordConfig();
-    if (!discord) return null;
+    const channelsDiscord = config?.channels?.discord as (OpenClawDiscordConfig & { channel?: string; channels?: string[] }) | undefined;
+    
+    if (!discord && !channelsDiscord) return null;
 
     const settings: ExtractedDiscordSettings = {};
 
     // Extract token
-    if (discord.token) {
+    if (discord?.token) {
       settings.token = discord.token;
     }
 
     // Extract guildId (may be stored as guildId, serverId, or in allowlist.guilds)
-    if (discord.guildId) {
+    if (discord?.guildId) {
       settings.guildId = discord.guildId;
-    } else if (discord.serverId) {
+    } else if (discord?.serverId) {
       settings.guildId = discord.serverId;
-    } else if (discord.allowlist?.guilds && discord.allowlist.guilds.length > 0) {
+    } else if (discord?.allowlist?.guilds && discord.allowlist.guilds.length > 0) {
       settings.guildId = discord.allowlist.guilds[0];
     }
 
-    // Extract channels
-    if (discord.channels?.chat) {
-      settings.chatChannelId = discord.channels.chat;
-    } else if (discord.channels?.default) {
-      settings.chatChannelId = discord.channels.default;
-    } else if (discord.allowlist?.channels && discord.allowlist.channels.length > 0) {
-      settings.chatChannelId = discord.allowlist.channels[0];
+    // Check for channel in "guildId/channelId" format from channels.discord
+    if (channelsDiscord?.channel) {
+      const parsed = this.parseChannelString(channelsDiscord.channel);
+      if (parsed.guildId && !settings.guildId) {
+        settings.guildId = parsed.guildId;
+      }
+      if (!settings.chatChannelId) {
+        settings.chatChannelId = parsed.channelId;
+      }
     }
 
-    if (discord.channels?.status) {
-      settings.statusChannelId = discord.channels.status;
-    } else if (discord.allowlist?.channels && discord.allowlist.channels.length > 1) {
-      settings.statusChannelId = discord.allowlist.channels[1];
+    // Check for channels array in "guildId/channelId" format
+    if (channelsDiscord?.channels && channelsDiscord.channels.length > 0) {
+      const parsedChannels: Array<{ guildId?: string; channelId: string }> = [];
+      for (const ch of channelsDiscord.channels) {
+        parsedChannels.push(this.parseChannelString(ch));
+      }
+      
+      // Extract guildId from first channel if not already set
+      if (!settings.guildId && parsedChannels[0]?.guildId) {
+        settings.guildId = parsedChannels[0].guildId;
+      }
+      
+      // Use first channel as chat channel
+      if (!settings.chatChannelId && parsedChannels[0]) {
+        settings.chatChannelId = parsedChannels[0].channelId;
+      }
+      
+      // Use second channel as status channel if available
+      if (!settings.statusChannelId && parsedChannels[1]) {
+        settings.statusChannelId = parsedChannels[1].channelId;
+      }
+      
+      // Store all channel IDs
+      settings.allowedChannels = parsedChannels.map(p => p.channelId);
     }
 
-    // Store all allowed channels for reference
-    if (discord.allowlist?.channels) {
-      settings.allowedChannels = [...discord.allowlist.channels];
+    // Extract channels from nested channels object
+    if (discord?.channels?.chat) {
+      const parsed = this.parseChannelString(discord.channels.chat);
+      if (parsed.guildId && !settings.guildId) {
+        settings.guildId = parsed.guildId;
+      }
+      if (!settings.chatChannelId) {
+        settings.chatChannelId = parsed.channelId;
+      }
+    } else if (discord?.channels?.default) {
+      const parsed = this.parseChannelString(discord.channels.default);
+      if (parsed.guildId && !settings.guildId) {
+        settings.guildId = parsed.guildId;
+      }
+      if (!settings.chatChannelId) {
+        settings.chatChannelId = parsed.channelId;
+      }
+    }
+
+    // Extract from allowlist.channels
+    if (discord?.allowlist?.channels && discord.allowlist.channels.length > 0) {
+      const parsedChannels: Array<{ guildId?: string; channelId: string }> = [];
+      for (const ch of discord.allowlist.channels) {
+        parsedChannels.push(this.parseChannelString(ch));
+      }
+      
+      if (!settings.guildId && parsedChannels[0]?.guildId) {
+        settings.guildId = parsedChannels[0].guildId;
+      }
+      
+      if (!settings.chatChannelId && parsedChannels[0]) {
+        settings.chatChannelId = parsedChannels[0].channelId;
+      }
+      
+      if (!settings.statusChannelId && parsedChannels[1]) {
+        settings.statusChannelId = parsedChannels[1].channelId;
+      }
+      
+      if (!settings.allowedChannels) {
+        settings.allowedChannels = parsedChannels.map(p => p.channelId);
+      }
+    }
+
+    if (discord?.channels?.status) {
+      const parsed = this.parseChannelString(discord.channels.status);
+      if (!settings.statusChannelId) {
+        settings.statusChannelId = parsed.channelId;
+      }
     }
 
     // Store allowed users
-    if (discord.allowlist?.users) {
+    if (discord?.allowlist?.users) {
       settings.allowedUsers = [...discord.allowlist.users];
+    }
+
+    // Return null if nothing useful was extracted
+    if (Object.keys(settings).length === 0) {
+      return null;
     }
 
     return settings;
