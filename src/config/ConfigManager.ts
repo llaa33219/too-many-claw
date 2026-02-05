@@ -114,6 +114,32 @@ const DEFAULT_CONFIG: TooManyClawConfig = {
   },
 };
 
+/** Discord webhook URL pattern */
+const WEBHOOK_URL_PATTERN = /^https:\/\/(discord\.com|discordapp\.com)\/api\/webhooks\/\d+\/[\w-]+$/;
+
+/**
+ * Configuration validation error
+ */
+export interface ConfigValidationError {
+  field: string;
+  message: string;
+  severity: 'error' | 'warning';
+}
+
+/**
+ * Repair report showing what would be fixed
+ */
+export interface RepairReport {
+  configFileExists: boolean;
+  configFileValid: boolean;
+  configFileCorrupted: boolean;
+  invalidWebhooks: string[];
+  missingFields: string[];
+  canImportFromOpenClaw: boolean;
+  openClawSettings: string[];
+  totalIssues: number;
+}
+
 export class ConfigManager {
   private configPath: string;
   private openclawConfigPath: string;
@@ -598,5 +624,394 @@ export class ConfigManager {
    */
   getOpenClawConfigPath(): string {
     return this.openclawConfigPath;
+  }
+
+  // ============================================
+  // Validation & Repair
+  // ============================================
+
+  /**
+   * Validate a Discord webhook URL
+   * @param url The webhook URL to validate
+   * @returns true if valid, false otherwise
+   */
+  validateWebhook(url: string): boolean {
+    if (!url || typeof url !== 'string') {
+      return false;
+    }
+    return WEBHOOK_URL_PATTERN.test(url);
+  }
+
+  /**
+   * Validate the current configuration and return any errors/warnings
+   * @returns Array of validation errors
+   */
+  validateConfig(): ConfigValidationError[] {
+    const errors: ConfigValidationError[] = [];
+
+    // Check if config file exists and is valid JSON
+    try {
+      if (fs.existsSync(this.configPath)) {
+        const raw = fs.readFileSync(this.configPath, 'utf-8');
+        try {
+          JSON.parse(raw);
+        } catch {
+          errors.push({
+            field: 'configFile',
+            message: 'Configuration file contains invalid JSON',
+            severity: 'error',
+          });
+        }
+      }
+    } catch {
+      errors.push({
+        field: 'configFile',
+        message: 'Cannot read configuration file',
+        severity: 'error',
+      });
+    }
+
+    // Validate Discord config structure
+    if (this.config.discord) {
+      const { token, guildId, chatChannelId, statusChannelId } = this.config.discord;
+
+      // Token validation
+      if (token && (typeof token !== 'string' || token.length < 50)) {
+        errors.push({
+          field: 'discord.token',
+          message: 'Discord token appears to be invalid (too short)',
+          severity: 'warning',
+        });
+      }
+
+      // Guild ID validation (17-19 digit snowflake)
+      if (guildId && !/^\d{17,19}$/.test(guildId)) {
+        errors.push({
+          field: 'discord.guildId',
+          message: 'Guild ID is not a valid Discord snowflake (should be 17-19 digits)',
+          severity: 'error',
+        });
+      }
+
+      // Channel ID validation
+      if (chatChannelId && !/^\d{17,19}$/.test(chatChannelId)) {
+        errors.push({
+          field: 'discord.chatChannelId',
+          message: 'Chat channel ID is not a valid Discord snowflake (should be 17-19 digits)',
+          severity: 'error',
+        });
+      }
+
+      if (statusChannelId && !/^\d{17,19}$/.test(statusChannelId)) {
+        errors.push({
+          field: 'discord.statusChannelId',
+          message: 'Status channel ID is not a valid Discord snowflake (should be 17-19 digits)',
+          severity: 'error',
+        });
+      }
+    }
+
+    // Validate webhooks
+    if (this.config.webhooks) {
+      for (const [agentId, webhookUrl] of Object.entries(this.config.webhooks)) {
+        if (!this.validateWebhook(webhookUrl)) {
+          errors.push({
+            field: `webhooks.${agentId}`,
+            message: `Invalid webhook URL for agent "${agentId}"`,
+            severity: 'error',
+          });
+        }
+      }
+    }
+
+    return errors;
+  }
+
+  /**
+   * Get a list of invalid webhook agent IDs
+   */
+  getInvalidWebhooks(): string[] {
+    const invalid: string[] = [];
+    for (const [agentId, webhookUrl] of Object.entries(this.config.webhooks)) {
+      if (!this.validateWebhook(webhookUrl)) {
+        invalid.push(agentId);
+      }
+    }
+    return invalid;
+  }
+
+  /**
+   * Remove all webhooks with invalid URLs
+   * @returns Number of webhooks removed
+   */
+  cleanInvalidWebhooks(): number {
+    const invalidAgents = this.getInvalidWebhooks();
+    
+    for (const agentId of invalidAgents) {
+      delete this.config.webhooks[agentId];
+    }
+
+    if (invalidAgents.length > 0) {
+      this.save();
+    }
+
+    return invalidAgents.length;
+  }
+
+  /**
+   * Generate a repair report showing what would be fixed
+   * This does NOT make any changes
+   */
+  getRepairReport(): RepairReport {
+    const report: RepairReport = {
+      configFileExists: false,
+      configFileValid: true,
+      configFileCorrupted: false,
+      invalidWebhooks: [],
+      missingFields: [],
+      canImportFromOpenClaw: false,
+      openClawSettings: [],
+      totalIssues: 0,
+    };
+
+    // Check config file status
+    report.configFileExists = fs.existsSync(this.configPath);
+
+    if (report.configFileExists) {
+      try {
+        const raw = fs.readFileSync(this.configPath, 'utf-8');
+        JSON.parse(raw);
+        report.configFileValid = true;
+      } catch {
+        report.configFileValid = false;
+        report.configFileCorrupted = true;
+        report.totalIssues++;
+      }
+    }
+
+    // Check for invalid webhooks
+    report.invalidWebhooks = this.getInvalidWebhooks();
+    report.totalIssues += report.invalidWebhooks.length;
+
+    // Check for missing required fields
+    const discord = this.config.discord;
+    if (!discord.token) {
+      report.missingFields.push('discord.token');
+    }
+    if (!discord.guildId) {
+      report.missingFields.push('discord.guildId');
+    }
+    if (!discord.chatChannelId) {
+      report.missingFields.push('discord.chatChannelId');
+    }
+
+    // Check if OpenClaw can help
+    if (this.hasOpenClawDiscordConfig()) {
+      const openClawSummary = this.getOpenClawImportSummary();
+      if (openClawSummary.hasConfig && openClawSummary.availableSettings.length > 0) {
+        report.canImportFromOpenClaw = true;
+        report.openClawSettings = openClawSummary.availableSettings;
+      }
+    }
+
+    // Count missing fields as issues (only if OpenClaw can't help fill them)
+    if (report.missingFields.length > 0 && !report.canImportFromOpenClaw) {
+      report.totalIssues += report.missingFields.length;
+    }
+
+    return report;
+  }
+
+  /**
+   * Attempt to repair the configuration
+   * - Rebuilds from defaults if corrupted
+   * - Removes invalid webhooks
+   * - Imports missing settings from OpenClaw if available
+   * @returns Object describing what was repaired
+   */
+  repairConfig(): {
+    configRebuilt: boolean;
+    webhooksRemoved: number;
+    openClawImported: boolean;
+    importedFields: string[];
+  } {
+    const result = {
+      configRebuilt: false,
+      webhooksRemoved: 0,
+      openClawImported: false,
+      importedFields: [] as string[],
+    };
+
+    // Step 1: Check if config file is corrupted and needs rebuilding
+    let needsRebuild = false;
+    let existingValidData: Partial<TooManyClawConfig> = {};
+
+    if (fs.existsSync(this.configPath)) {
+      try {
+        const raw = fs.readFileSync(this.configPath, 'utf-8');
+        const parsed = JSON.parse(raw);
+        existingValidData = parsed;
+      } catch {
+        // Config is corrupted, need to rebuild
+        needsRebuild = true;
+      }
+    }
+
+    if (needsRebuild) {
+      // Start fresh with defaults
+      this.config = { ...DEFAULT_CONFIG };
+      
+      // Try to salvage any valid data from the corrupted config
+      // (this is best-effort, the file was corrupted so we might not have anything)
+      if (existingValidData.discord && typeof existingValidData.discord === 'object') {
+        this.config.discord = { ...existingValidData.discord };
+      }
+      if (existingValidData.webhooks && typeof existingValidData.webhooks === 'object') {
+        this.config.webhooks = { ...existingValidData.webhooks };
+      }
+      if (existingValidData.simulation && typeof existingValidData.simulation === 'object') {
+        this.config.simulation = { ...DEFAULT_CONFIG.simulation, ...existingValidData.simulation };
+      }
+      
+      result.configRebuilt = true;
+    }
+
+    // Step 2: Clean invalid webhooks
+    const invalidCount = this.cleanInvalidWebhooks();
+    result.webhooksRemoved = invalidCount;
+
+    // Step 3: Import from OpenClaw if we're missing critical fields
+    const discord = this.config.discord;
+    const hasMissingFields = !discord.token || !discord.guildId || !discord.chatChannelId;
+
+    if (hasMissingFields && this.hasOpenClawDiscordConfig()) {
+      const extracted = this.extractOpenClawDiscordSettings();
+      
+      if (extracted) {
+        if (!discord.token && extracted.token) {
+          discord.token = extracted.token;
+          result.importedFields.push('token');
+        }
+        if (!discord.guildId && extracted.guildId) {
+          discord.guildId = extracted.guildId;
+          result.importedFields.push('guildId');
+        }
+        if (!discord.chatChannelId && extracted.chatChannelId) {
+          discord.chatChannelId = extracted.chatChannelId;
+          result.importedFields.push('chatChannelId');
+        }
+        if (!discord.statusChannelId && extracted.statusChannelId) {
+          discord.statusChannelId = extracted.statusChannelId;
+          result.importedFields.push('statusChannelId');
+        }
+
+        if (result.importedFields.length > 0) {
+          this.config.discord = discord;
+          result.openClawImported = true;
+        }
+      }
+    }
+
+    // Save the repaired config
+    this.save();
+
+    return result;
+  }
+
+  /**
+   * Check if the config file is corrupted (invalid JSON)
+   */
+  isConfigCorrupted(): boolean {
+    if (!fs.existsSync(this.configPath)) {
+      return false; // No file is not corrupted, just missing
+    }
+
+    try {
+      const raw = fs.readFileSync(this.configPath, 'utf-8');
+      JSON.parse(raw);
+      return false;
+    } catch {
+      return true;
+    }
+  }
+
+  /**
+   * Create a backup of the current config file
+   * @returns The backup file path, or null if no config exists
+   */
+  backupConfig(): string | null {
+    if (!fs.existsSync(this.configPath)) {
+      return null;
+    }
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const backupPath = this.configPath.replace('.json', `.backup-${timestamp}.json`);
+    
+    try {
+      fs.copyFileSync(this.configPath, backupPath);
+      return backupPath;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Restore config from a backup file
+   * @param backupPath Path to the backup file
+   * @returns true if successful
+   */
+  restoreFromBackup(backupPath: string): boolean {
+    try {
+      // Security: ensure path is within config directory to prevent path traversal
+      const configDir = path.dirname(this.configPath);
+      const resolvedPath = path.resolve(backupPath);
+      if (!resolvedPath.startsWith(configDir + path.sep) && resolvedPath !== configDir) {
+        return false;
+      }
+
+      if (!fs.existsSync(backupPath)) {
+        return false;
+      }
+
+      // Validate the backup is valid JSON
+      const raw = fs.readFileSync(backupPath, 'utf-8');
+      const parsed = JSON.parse(raw);
+
+      // Copy backup to config path
+      fs.copyFileSync(backupPath, this.configPath);
+      
+      // Reload the config
+      this.config = { ...DEFAULT_CONFIG, ...parsed };
+      
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * List available backup files
+   * @returns Array of backup file paths sorted by date (newest first)
+   */
+  listBackups(): string[] {
+    const configDir = path.dirname(this.configPath);
+    const backupPattern = /too-many-claw\.backup-.*\.json$/;
+    
+    try {
+      const files = fs.readdirSync(configDir);
+      const backups = files
+        .filter(f => backupPattern.test(f))
+        .map(f => path.join(configDir, f))
+        .sort((a, b) => {
+          // Sort by modification time, newest first
+          const statA = fs.statSync(a);
+          const statB = fs.statSync(b);
+          return statB.mtime.getTime() - statA.mtime.getTime();
+        });
+      
+      return backups;
+    } catch {
+      return [];
+    }
   }
 }

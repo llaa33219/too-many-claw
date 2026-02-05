@@ -2,4 +2,10 @@
  * Too Many Claw - Config Module Exports
  */
 
-export { ConfigManager, DiscordConfig, TooManyClawConfig } from './ConfigManager.js';
+export { 
+  ConfigManager, 
+  DiscordConfig, 
+  TooManyClawConfig,
+  ConfigValidationError,
+  RepairReport,
+} from './ConfigManager.js';

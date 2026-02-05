@@ -1117,6 +1117,267 @@ function formatUptime(ms: number): string {
   }
 }
 
+// Repair command for fixing configuration issues
+program
+  .command('repair')
+  .description('Diagnose and repair TMC configuration issues')
+  .option('--check', 'Dry run - only show what would be fixed without making changes')
+  .option('--force', 'Skip confirmation prompts')
+  .option('--restore', 'Restore configuration from a backup')
+  .action(async (options) => {
+    console.log(chalk.cyan(`
+╔════════════════════════════════════════════════════════════╗
+║                                                            ║
+║   🔧 Too Many Claw - Configuration Repair                  ║
+║                                                            ║
+╚════════════════════════════════════════════════════════════╝
+`));
+
+    const config = new ConfigManager();
+
+    // Handle --restore option
+    if (options.restore) {
+      await handleBackupRestore(config);
+      return;
+    }
+
+    // Generate repair report
+    console.log(chalk.yellow('━━━ Configuration Health Check ━━━\n'));
+
+    const report = config.getRepairReport();
+    const validationErrors = config.validateConfig();
+
+    // Display config file status
+    console.log(chalk.white('Config file:'));
+    if (!report.configFileExists) {
+      console.log(chalk.gray('  ○ Not found (will be created on first use)'));
+    } else if (report.configFileCorrupted) {
+      console.log(chalk.red('  ✗ CORRUPTED - Invalid JSON'));
+    } else {
+      console.log(chalk.green('  ✓ Valid'));
+    }
+
+    // Display Discord settings status
+    console.log(chalk.white('\nDiscord configuration:'));
+    const discordConfig = config.getDiscordConfig();
+    if (discordConfig.token) {
+      console.log(chalk.green('  ✓ Token configured'));
+    } else {
+      console.log(chalk.yellow('  ○ Token not set'));
+    }
+    if (discordConfig.guildId) {
+      console.log(chalk.green(`  ✓ Guild ID: ${discordConfig.guildId}`));
+    } else {
+      console.log(chalk.yellow('  ○ Guild ID not set'));
+    }
+    if (discordConfig.chatChannelId) {
+      console.log(chalk.green(`  ✓ Chat Channel: ${discordConfig.chatChannelId}`));
+    } else {
+      console.log(chalk.yellow('  ○ Chat Channel not set'));
+    }
+
+    // Display webhook status
+    const webhooks = config.getAllWebhooks();
+    const webhookCount = Object.keys(webhooks).length;
+    console.log(chalk.white('\nWebhooks:'));
+    console.log(chalk.gray(`  • ${webhookCount} webhook(s) configured`));
+    
+    if (report.invalidWebhooks.length > 0) {
+      console.log(chalk.red(`  ✗ ${report.invalidWebhooks.length} invalid webhook(s) found:`));
+      report.invalidWebhooks.forEach(agentId => {
+        console.log(chalk.red(`    - ${agentId}`));
+      });
+    } else if (webhookCount > 0) {
+      console.log(chalk.green('  ✓ All webhooks valid'));
+    }
+
+    // Display validation errors
+    if (validationErrors.length > 0) {
+      console.log(chalk.white('\nValidation issues:'));
+      validationErrors.forEach(err => {
+        const icon = err.severity === 'error' ? chalk.red('✗') : chalk.yellow('⚠');
+        console.log(`  ${icon} ${err.field}: ${err.message}`);
+      });
+    }
+
+    // Display OpenClaw sync opportunity
+    if (report.canImportFromOpenClaw) {
+      console.log(chalk.white('\nOpenClaw integration:'));
+      console.log(chalk.green('  ✓ OpenClaw Discord settings available'));
+      console.log(chalk.gray(`    Available: ${report.openClawSettings.join(', ')}`));
+    }
+
+    // Summary
+    console.log(chalk.yellow('\n━━━ Summary ━━━\n'));
+
+    const issues: string[] = [];
+    if (report.configFileCorrupted) issues.push('Corrupted config file');
+    if (report.invalidWebhooks.length > 0) issues.push(`${report.invalidWebhooks.length} invalid webhook(s)`);
+    if (report.missingFields.length > 0 && report.canImportFromOpenClaw) {
+      issues.push(`Missing fields that can be imported from OpenClaw`);
+    }
+
+    if (issues.length === 0) {
+      console.log(chalk.green('✓ No issues found! Configuration is healthy.\n'));
+      return;
+    }
+
+    console.log(chalk.yellow(`Found ${issues.length} issue(s) that can be repaired:`));
+    issues.forEach((issue, i) => {
+      console.log(chalk.yellow(`  ${i + 1}. ${issue}`));
+    });
+
+    // Dry run mode
+    if (options.check) {
+      console.log(chalk.cyan('\n[Dry run mode - no changes made]'));
+      console.log(chalk.gray('Run without --check to apply repairs.\n'));
+      return;
+    }
+
+    // Confirmation
+    if (!options.force) {
+      console.log();
+      const { confirm } = await inquirer.prompt([
+        {
+          type: 'confirm',
+          name: 'confirm',
+          message: 'Would you like to repair these issues?',
+          default: true,
+        },
+      ]);
+
+      if (!confirm) {
+        console.log(chalk.yellow('\nRepair cancelled.\n'));
+        return;
+      }
+    }
+
+    // Create backup before repair
+    const backupSpinner = ora('Creating backup...').start();
+    const backupPath = config.backupConfig();
+    if (backupPath) {
+      backupSpinner.succeed(`Backup created: ${backupPath}`);
+    } else {
+      backupSpinner.info('No existing config to backup');
+    }
+
+    // Run repair
+    const repairSpinner = ora('Repairing configuration...').start();
+    const result = config.repairConfig();
+    repairSpinner.succeed('Repair complete');
+
+    // Show results
+    console.log(chalk.yellow('\n━━━ Repair Results ━━━\n'));
+
+    if (result.configRebuilt) {
+      console.log(chalk.green('  ✓ Config file rebuilt from defaults'));
+    }
+
+    if (result.webhooksRemoved > 0) {
+      console.log(chalk.green(`  ✓ Removed ${result.webhooksRemoved} invalid webhook(s)`));
+    }
+
+    if (result.openClawImported) {
+      console.log(chalk.green('  ✓ Imported from OpenClaw:'));
+      result.importedFields.forEach(field => {
+        console.log(chalk.gray(`    - ${field}`));
+      });
+    }
+
+    if (!result.configRebuilt && result.webhooksRemoved === 0 && !result.openClawImported) {
+      console.log(chalk.gray('  No repairs were necessary.'));
+    }
+
+    // Final status
+    console.log();
+    if (config.isDiscordConfigured()) {
+      console.log(chalk.green('✓ Discord is now fully configured!'));
+      console.log(chalk.gray('  Run `tmc start` to start the bot.\n'));
+    } else {
+      console.log(chalk.yellow('⚠ Discord is not fully configured.'));
+      console.log(chalk.gray('  Run `tmc setup` to complete configuration.\n'));
+    }
+  });
+
+/**
+ * Handle backup restoration flow
+ */
+async function handleBackupRestore(config: ConfigManager): Promise<void> {
+  console.log(chalk.yellow('━━━ Restore from Backup ━━━\n'));
+
+  const backups = config.listBackups();
+
+  if (backups.length === 0) {
+    console.log(chalk.yellow('No backups found.\n'));
+    console.log(chalk.gray('Backups are created automatically when running `tmc repair`.'));
+    console.log(chalk.gray(`Backup location: ~/.openclaw/\n`));
+    return;
+  }
+
+  console.log(chalk.white(`Found ${backups.length} backup(s):\n`));
+
+  // Create choices from backups
+  const choices = backups.map((backupPath, index) => {
+    const filename = backupPath.split('/').pop() || backupPath;
+    // Extract timestamp from filename
+    const match = filename.match(/backup-(.+)\.json$/);
+    const timestamp = match ? match[1].replace(/-/g, ':').replace('T', ' ') : 'Unknown';
+    return {
+      name: `${index + 1}. ${filename} (${timestamp})`,
+      value: backupPath,
+    };
+  });
+
+  choices.push({ name: 'Cancel', value: '' });
+
+  const { selectedBackup } = await inquirer.prompt([
+    {
+      type: 'list',
+      name: 'selectedBackup',
+      message: 'Select a backup to restore:',
+      choices,
+    },
+  ]);
+
+  if (!selectedBackup) {
+    console.log(chalk.yellow('\nRestore cancelled.\n'));
+    return;
+  }
+
+  // Confirm restoration
+  const { confirm } = await inquirer.prompt([
+    {
+      type: 'confirm',
+      name: 'confirm',
+      message: chalk.yellow('This will overwrite your current configuration. Continue?'),
+      default: false,
+    },
+  ]);
+
+  if (!confirm) {
+    console.log(chalk.yellow('\nRestore cancelled.\n'));
+    return;
+  }
+
+  // Create backup of current config before restoring
+  const currentBackup = config.backupConfig();
+  if (currentBackup) {
+    console.log(chalk.gray(`\nCurrent config backed up to: ${currentBackup}`));
+  }
+
+  // Restore
+  const spinner = ora('Restoring configuration...').start();
+  const success = config.restoreFromBackup(selectedBackup);
+
+  if (success) {
+    spinner.succeed('Configuration restored successfully!');
+    console.log(chalk.green('\n✓ Your configuration has been restored from the backup.\n'));
+  } else {
+    spinner.fail('Failed to restore configuration');
+    console.log(chalk.red('\nThe backup file may be corrupted or inaccessible.\n'));
+  }
+}
+
 // List agents command
 program
   .command('agents')
