@@ -47,16 +47,16 @@ export class TerminalUI {
   stop(): void {
     this.isRunning = false;
     this.rl.close();
-    console.log(chalk.yellow('\n👋 Too Many Claw 시뮬레이션을 종료합니다.\n'));
+    console.log(chalk.yellow('\n👋 Exiting Too Many Claw simulation. Goodbye!\n'));
   }
 
   private printWelcome(): void {
     console.log(chalk.cyan(`
 ╔════════════════════════════════════════════════════════════╗
 ║                                                            ║
-║   🦀 Too Many Claw - 터미널 시뮬레이션                      ║
+║   🦀 Too Many Claw - Terminal Simulation                   ║
 ║                                                            ║
-║   35개의 AI 에이전트가 협업하는 시스템                       ║
+║   35 AI agents collaborating together                      ║
 ║                                                            ║
 ╚════════════════════════════════════════════════════════════╝
 `));
@@ -64,17 +64,17 @@ export class TerminalUI {
 
   private printHelp(): void {
     console.log(chalk.gray(`
-명령어:
-  /help          - 도움말 표시
-  /status        - 활성 에이전트 목록
-  /agents        - 전체 에이전트 목록
-  /summon @agent - 에이전트 소환
-  /dismiss @agent - 에이전트 퇴장
-  /clear         - 화면 지우기
-  /quit          - 종료
+Commands:
+  /help          - Show this help
+  /status        - List active agents
+  /agents        - List all agents
+  /summon @agent - Summon an agent
+  /dismiss @agent - Dismiss an agent
+  /clear         - Clear screen
+  /quit          - Exit
 
-메시지에 @agent-id를 포함하면 해당 에이전트가 소환됩니다.
-예: @searcher 최신 React 정보 찾아줘
+Include @agent-id in your message to summon that agent.
+Example: @searcher Find the latest React information
 `));
   }
 
@@ -89,7 +89,7 @@ export class TerminalUI {
 
   private prompt(): Promise<string> {
     return new Promise((resolve) => {
-      this.rl.question(chalk.cyan('👤 사용자 > '), (answer) => {
+      this.rl.question(chalk.cyan('👤 You > '), (answer) => {
         resolve(answer);
       });
     });
@@ -145,8 +145,8 @@ export class TerminalUI {
         break;
 
       default:
-        console.log(chalk.red(`알 수 없는 명령어: ${command}`));
-        console.log(chalk.gray('/help 로 사용 가능한 명령어를 확인하세요.'));
+        console.log(chalk.red(`Unknown command: ${command}`));
+        console.log(chalk.gray('Use /help to see available commands.'));
     }
   }
 
@@ -154,13 +154,13 @@ export class TerminalUI {
     const status = this.orchestrator.getStatus();
     
     console.log(chalk.cyan('\n┌─────────────────────────────────────┐'));
-    console.log(chalk.cyan('│         🎭 에이전트 상태             │'));
+    console.log(chalk.cyan('│           🎭 Agent Status            │'));
     console.log(chalk.cyan('├─────────────────────────────────────┤'));
-    console.log(chalk.cyan('│') + chalk.white(`  활성: ${status.active}  |  대기: ${status.dormant}`).padEnd(36) + chalk.cyan('│'));
+    console.log(chalk.cyan('│') + chalk.white(`  Active: ${status.active}  |  Dormant: ${status.dormant}`).padEnd(36) + chalk.cyan('│'));
     console.log(chalk.cyan('├─────────────────────────────────────┤'));
 
     if (status.activeIds.length === 0) {
-      console.log(chalk.cyan('│') + chalk.gray('  (활성화된 에이전트 없음)').padEnd(36) + chalk.cyan('│'));
+      console.log(chalk.cyan('│') + chalk.gray('  (No active agents)').padEnd(36) + chalk.cyan('│'));
     } else {
       for (const id of status.activeIds) {
         const agent = getAgentById(id);
@@ -175,7 +175,7 @@ export class TerminalUI {
 
   private printAllAgents(): void {
     console.log(chalk.cyan('\n┌─────────────────────────────────────────────────┐'));
-    console.log(chalk.cyan('│              🎭 전체 에이전트 목록               │'));
+    console.log(chalk.cyan('│              🎭 All Agents                       │'));
     console.log(chalk.cyan('├─────────────────────────────────────────────────┤'));
 
     const categories = new Map<string, typeof AGENT_DEFINITIONS>();
@@ -201,7 +201,7 @@ export class TerminalUI {
 
   private async handleSummon(args: string[]): Promise<void> {
     if (args.length === 0) {
-      console.log(chalk.red('사용법: /summon @agent-id'));
+      console.log(chalk.red('Usage: /summon @agent-id'));
       return;
     }
 
@@ -209,21 +209,21 @@ export class TerminalUI {
     const agent = getAgentById(agentId);
 
     if (!agent) {
-      console.log(chalk.red(`알 수 없는 에이전트: ${agentId}`));
+      console.log(chalk.red(`Unknown agent: ${agentId}`));
       return;
     }
 
     if (this.orchestrator.isAgentActive(agentId)) {
-      console.log(chalk.yellow(`${agent.emoji} ${agent.name}은(는) 이미 활성화되어 있습니다.`));
+      console.log(chalk.yellow(`${agent.emoji} ${agent.name} is already active.`));
       return;
     }
 
-    await this.orchestrator.summonAgent(agentId, '사용자가 직접 소환');
+    await this.orchestrator.summonAgent(agentId, 'Summoned by user');
   }
 
   private async handleDismiss(args: string[]): Promise<void> {
     if (args.length === 0) {
-      console.log(chalk.red('사용법: /dismiss @agent-id'));
+      console.log(chalk.red('Usage: /dismiss @agent-id'));
       return;
     }
 
@@ -231,20 +231,20 @@ export class TerminalUI {
     const agent = getAgentById(agentId);
 
     if (!agent) {
-      console.log(chalk.red(`알 수 없는 에이전트: ${agentId}`));
+      console.log(chalk.red(`Unknown agent: ${agentId}`));
       return;
     }
 
     if (agent.alwaysActive) {
-      console.log(chalk.red(`${agent.emoji} ${agent.name}은(는) 항상 활성화 상태입니다.`));
+      console.log(chalk.red(`${agent.emoji} ${agent.name} is always active and cannot be dismissed.`));
       return;
     }
 
     if (!this.orchestrator.isAgentActive(agentId)) {
-      console.log(chalk.yellow(`${agent.emoji} ${agent.name}은(는) 이미 비활성화되어 있습니다.`));
+      console.log(chalk.yellow(`${agent.emoji} ${agent.name} is already dormant.`));
       return;
     }
 
-    await this.orchestrator.dismissAgent(agentId, '사용자가 직접 퇴장 요청');
+    await this.orchestrator.dismissAgent(agentId, 'Dismissed by user');
   }
 }

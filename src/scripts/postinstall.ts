@@ -70,24 +70,24 @@ async function postinstall(): Promise<void> {
 function generateBasicSoul(agent: typeof AGENT_DEFINITIONS[0]): string {
   return `# ${agent.emoji} ${agent.name}
 
-## 나는 누구인가
+## Who I Am
 ${agent.role}
 
-## 전문 분야
+## Expertise
 - ${agent.role}
 
-## 소통 스타일
-- 전문적이고 명확하게 소통한다
-- 팀원들과 협력한다
+## Communication Style
+- Communicate professionally and clearly
+- Collaborate with team members
 
-## 행동 지침
-- 요청받은 작업을 성실히 수행한다
-- 다른 에이전트와 협력한다
-- 작업 완료 후 결과를 공유한다
+## Behavioral Guidelines
+- Diligently perform requested tasks
+- Cooperate with other agents
+- Share results after completing work
 
-## 상호작용 규칙
-- @멘션으로 소환되면 응답한다
-- 작업 완료 시 퇴장한다
+## Interaction Rules
+- Respond when summoned via @mention
+- Exit when work is complete
 `;
 }
 
@@ -142,36 +142,36 @@ async function mergeOpenclawConfig(configPath: string): Promise<void> {
 function generateSkillMd(): string {
   return `---
 name: too-many-claw
-description: 35개의 AI 에이전트가 유동적으로 협업하는 OpenClaw 확장
+description: OpenClaw extension with 35 AI agents that collaborate dynamically
 author: Too Many Claw
 version: 1.0.0
 ---
 
 # Too Many Claw
 
-35개의 전문화된 AI 에이전트가 Discord를 통해 협업하는 시스템입니다.
+35 specialized AI agents collaborating through Discord.
 
-## 에이전트 카테고리
+## Agent Categories
 
-- **CORE**: Base (팀 코디네이터)
-- **RESEARCH**: 검색, 기술조사, 트렌드분석, 데이터
-- **PSYCHOLOGY**: 상담, 심리분석, 질문, 설득, 교육
-- **PLANNING**: 계획, 팀구성, 홍보, 업로드
-- **DEVELOPMENT**: 백엔드, 프론트엔드, 디자인, 리뷰, 문서, 자동화, 프롬프트, AI이미지
-- **TESTING**: 테스트, UX테스트, 보안체크, 취약점, 모의해킹
-- **CRITIQUE**: 팩트체크, 독설, 비판, 부정, 칭찬
-- **SPECIAL**: 꼼수, 협박, 더티워커
+- **CORE**: Base (Team Coordinator)
+- **RESEARCH**: Search, Tech Research, Trend Analysis, Data
+- **PSYCHOLOGY**: Counseling, User Psychology, Questions, Persuasion, Education
+- **PLANNING**: Planning, Team Composition, Promotion, Upload
+- **DEVELOPMENT**: Backend, Frontend, Design, Review, Docs, Automation, Prompts, AI Images
+- **TESTING**: Testing, UX Testing, Security Check, Vulnerabilities, Pentesting
+- **CRITIQUE**: Fact Check, Blunt Critic, Critic, Negative, Praise
+- **SPECIAL**: Loopholes, Pressure, Dirty Worker
 
-## 사용법
+## Usage
 
-에이전트를 소환하려면 @멘션하세요:
-\`@searcher 최신 React 정보 찾아줘\`
+Summon an agent with @mention:
+\`@searcher Find the latest React information\`
 
-## 명령어
+## Commands
 
-- \`tmc start\` - Discord 봇 시작
-- \`tmc simulate\` - 터미널 시뮬레이션
-- \`tmc status\` - 에이전트 상태 확인
+- \`tmc start\` - Start Discord bot
+- \`tmc simulate\` - Terminal simulation
+- \`tmc status\` - Check agent status
 `;
 }
 
