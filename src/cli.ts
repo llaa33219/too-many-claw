@@ -103,18 +103,30 @@ async function checkAndImportOpenClaw(config: ConfigManager): Promise<boolean> {
   const openclawDiscord = config.getOpenClawDiscordConfig();
   if (!openclawDiscord) return false;
 
+  // Get detailed import summary
+  const summary = config.getOpenClawImportSummary();
+  const extracted = summary.extracted;
+
   // Show what can be imported
   console.log(chalk.white('\nThe following settings can be imported:\n'));
   
-  if (openclawDiscord.token) {
-    const maskedToken = openclawDiscord.token.substring(0, 10) + '...' + openclawDiscord.token.slice(-4);
+  if (extracted?.token) {
+    const maskedToken = extracted.token.substring(0, 10) + '...' + extracted.token.slice(-4);
     console.log(chalk.gray(`  • Bot Token: ${maskedToken}`));
   }
-  if (openclawDiscord.allowlist?.channels && openclawDiscord.allowlist.channels.length > 0) {
-    console.log(chalk.gray(`  • Allowed Channels: ${openclawDiscord.allowlist.channels.length} channel(s)`));
-    openclawDiscord.allowlist.channels.forEach((ch, i) => {
-      const label = i === 0 ? '(will use as chat channel)' : i === 1 ? '(will use as status channel)' : '';
-      console.log(chalk.gray(`      - ${ch} ${label}`));
+  if (extracted?.guildId) {
+    console.log(chalk.gray(`  • Server (Guild) ID: ${extracted.guildId}`));
+  }
+  if (extracted?.chatChannelId) {
+    console.log(chalk.gray(`  • Chat Channel: ${extracted.chatChannelId}`));
+  }
+  if (extracted?.statusChannelId) {
+    console.log(chalk.gray(`  • Status Channel: ${extracted.statusChannelId}`));
+  }
+  if (extracted?.allowedChannels && extracted.allowedChannels.length > 0) {
+    console.log(chalk.gray(`  • All Allowed Channels: ${extracted.allowedChannels.length} channel(s)`));
+    extracted.allowedChannels.forEach((ch) => {
+      console.log(chalk.gray(`      - ${ch}`));
     });
   }
   console.log();
@@ -141,6 +153,9 @@ async function checkAndImportOpenClaw(config: ConfigManager): Promise<boolean> {
     console.log(chalk.white('Imported settings:'));
     if (result.imported.token) {
       console.log(chalk.green('  ✓ Bot Token'));
+    }
+    if (result.imported.guildId) {
+      console.log(chalk.green(`  ✓ Server (Guild) ID: ${result.imported.guildId}`));
     }
     if (result.imported.chatChannelId) {
       console.log(chalk.green(`  ✓ Chat Channel: ${result.imported.chatChannelId}`));
@@ -334,28 +349,49 @@ async function runDiscordSetup(config: ConfigManager): Promise<void> {
 }
 
 async function runWebhookSetup(config: ConfigManager): Promise<void> {
-  console.log(chalk.gray('\nTo create a webhook:'));
-  console.log(chalk.gray('  1. Go to your Discord channel settings'));
-  console.log(chalk.gray('  2. Click "Integrations" → "Webhooks"'));
-  console.log(chalk.gray('  3. Create a new webhook and copy its URL\n'));
+  const discordConfig = config.getDiscordConfig();
+  const hasDiscordConfig = !!(discordConfig.token && discordConfig.chatChannelId);
+
+  // Build choices - auto-create only available if Discord is configured
+  const choices = [
+    ...(hasDiscordConfig ? [{ name: '🤖 Auto-create webhooks (requires bot connection)', value: 'auto' }] : []),
+    { name: '📝 Use a single webhook for all agents', value: 'single' },
+    { name: '📁 Configure webhooks per category', value: 'category' },
+    { name: '🔧 Configure webhooks per agent', value: 'individual' },
+    { name: '⏭️  Skip webhook configuration', value: 'skip' },
+  ];
+
+  if (!hasDiscordConfig) {
+    console.log(chalk.yellow('\n⚠ Auto-create webhooks requires Discord to be configured first.'));
+    console.log(chalk.gray('  Run Discord setup to enable this feature.\n'));
+  }
+
+  console.log(chalk.gray('\nWebhooks allow each agent to have a unique name and avatar in Discord.'));
+  console.log(chalk.gray('You can create them automatically or manually.\n'));
 
   const { webhookMode } = await inquirer.prompt([
     {
       type: 'list',
       name: 'webhookMode',
       message: 'How would you like to configure webhooks?',
-      choices: [
-        { name: 'Use a single webhook for all agents', value: 'single' },
-        { name: 'Configure webhooks per category', value: 'category' },
-        { name: 'Configure webhooks per agent', value: 'individual' },
-        { name: 'Skip webhook configuration', value: 'skip' },
-      ],
+      choices,
     },
   ]);
 
   if (webhookMode === 'skip') {
     return;
   }
+
+  if (webhookMode === 'auto') {
+    await runAutoWebhookSetup(config);
+    return;
+  }
+
+  // Manual setup instructions
+  console.log(chalk.gray('\nTo create a webhook manually:'));
+  console.log(chalk.gray('  1. Go to your Discord channel settings'));
+  console.log(chalk.gray('  2. Click "Integrations" → "Webhooks"'));
+  console.log(chalk.gray('  3. Create a new webhook and copy its URL\n'));
 
   if (webhookMode === 'single') {
     const { webhookUrl } = await inquirer.prompt([
@@ -437,6 +473,146 @@ async function runWebhookSetup(config: ConfigManager): Promise<void> {
         console.log(chalk.green(`  ✓ Set webhook for ${agent.name}`));
       }
     }
+  }
+}
+
+/**
+ * Auto-create webhooks by connecting to Discord and creating them programmatically
+ */
+async function runAutoWebhookSetup(config: ConfigManager): Promise<void> {
+  console.log(chalk.cyan('\n🤖 Auto-Create Webhooks\n'));
+  console.log(chalk.gray('This will connect to Discord and automatically create webhooks for all 35 agents.'));
+  console.log(chalk.gray('The bot needs MANAGE_WEBHOOKS permission in the target channel.\n'));
+
+  const discordConfig = config.getDiscordConfig();
+
+  // Validate Discord config
+  if (!discordConfig.token) {
+    console.log(chalk.red('❌ Discord bot token not configured.'));
+    console.log(chalk.gray('Run `tmc setup` to configure Discord settings first.\n'));
+    return;
+  }
+
+  if (!discordConfig.chatChannelId) {
+    console.log(chalk.red('❌ Chat channel not configured.'));
+    console.log(chalk.gray('Run `tmc setup` to configure Discord settings first.\n'));
+    return;
+  }
+
+  // Warn about Discord's webhook limit
+  console.log(chalk.yellow('⚠ Important: Discord limits webhooks to 15 per channel.'));
+  console.log(chalk.gray(`  You have ${AGENT_DEFINITIONS.length} agents, so some will share webhooks or fail to create.`));
+  console.log(chalk.gray('  Consider using multiple channels or a single shared webhook if this is an issue.\n'));
+
+  // Confirm before proceeding
+  const { confirm } = await inquirer.prompt([
+    {
+      type: 'confirm',
+      name: 'confirm',
+      message: `Create webhooks for all ${AGENT_DEFINITIONS.length} agents in channel ${discordConfig.chatChannelId}?`,
+      default: true,
+    },
+  ]);
+
+  if (!confirm) {
+    console.log(chalk.yellow('\nWebhook creation cancelled.\n'));
+    return;
+  }
+
+  // Connect to Discord
+  const connectSpinner = ora('Connecting to Discord...').start();
+
+  let adapter: DiscordAdapter;
+  try {
+    adapter = new DiscordAdapter({
+      token: discordConfig.token,
+      guildId: discordConfig.guildId || '0', // Placeholder, will be auto-detected
+      chatChannelId: discordConfig.chatChannelId,
+      statusChannelId: discordConfig.statusChannelId,
+    });
+
+    await adapter.connect();
+    connectSpinner.succeed('Connected to Discord');
+
+    // Wait for bot to fully initialize (ready event)
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  } catch (error) {
+    connectSpinner.fail('Failed to connect to Discord');
+    console.log(chalk.red(`\nError: ${error instanceof Error ? error.message : 'Unknown error'}`));
+    console.log(chalk.gray('\nMake sure your bot token is valid and the bot is invited to your server.\n'));
+    return;
+  }
+
+  try {
+    // Auto-detect guildId if not set
+    if (!discordConfig.guildId) {
+      const detectSpinner = ora('Detecting server (guild) ID...').start();
+      const detectedGuildId = await adapter.detectGuildId();
+      
+      if (detectedGuildId) {
+        config.updateGuildId(detectedGuildId);
+        detectSpinner.succeed(`Detected server ID: ${detectedGuildId}`);
+      } else {
+        detectSpinner.warn('Could not auto-detect server ID (bot may not be in any servers)');
+      }
+    }
+
+    // Check webhook permissions
+    const permSpinner = ora('Checking webhook permissions...').start();
+    const hasPermission = await adapter.hasWebhookPermission(discordConfig.chatChannelId);
+
+    if (!hasPermission) {
+      permSpinner.fail('Bot lacks MANAGE_WEBHOOKS permission');
+      console.log(chalk.red('\n❌ The bot does not have permission to manage webhooks in this channel.'));
+      console.log(chalk.gray('\nTo fix this:'));
+      console.log(chalk.gray('  1. Go to your Discord server settings'));
+      console.log(chalk.gray('  2. Navigate to Roles or Channel Permissions'));
+      console.log(chalk.gray('  3. Grant the bot "Manage Webhooks" permission'));
+      console.log(chalk.gray('  4. Try again\n'));
+      await adapter.disconnect();
+      return;
+    }
+    permSpinner.succeed('Bot has webhook permissions');
+
+    // Create webhooks with progress
+    console.log(chalk.cyan(`\nCreating webhooks for ${AGENT_DEFINITIONS.length} agents...\n`));
+
+    const progressSpinner = ora('Starting webhook creation...').start();
+
+    const webhooks = await adapter.autoCreateWebhooks(
+      discordConfig.chatChannelId,
+      (current, total, agentName) => {
+        progressSpinner.text = `Creating webhooks... (${current}/${total}) ${agentName}`;
+      }
+    );
+
+    progressSpinner.succeed(`Created webhooks for ${Object.keys(webhooks).length} agents`);
+
+    // Save webhooks to config (batch save for efficiency)
+    const saveSpinner = ora('Saving webhook configuration...').start();
+    const existingWebhooks = config.getAllWebhooks();
+    config.setAllWebhooks({ ...existingWebhooks, ...webhooks });
+    saveSpinner.succeed('Webhook configuration saved');
+
+    // Summary
+    console.log(chalk.green(`\n✅ Successfully configured ${Object.keys(webhooks).length} webhooks!\n`));
+
+    // Check for any missing
+    const missingCount = AGENT_DEFINITIONS.length - Object.keys(webhooks).length;
+    if (missingCount > 0) {
+      console.log(chalk.yellow(`⚠ ${missingCount} webhook(s) could not be created.`));
+      console.log(chalk.gray('  Possible reasons:'));
+      console.log(chalk.gray('  • Discord\'s 15 webhook per channel limit reached'));
+      console.log(chalk.gray('  • Rate limiting from Discord API'));
+      console.log(chalk.gray('  • Webhook already exists with the same name'));
+      console.log(chalk.gray('\n  Consider using multiple channels or a shared webhook for remaining agents.\n'));
+    }
+
+  } finally {
+    // Always disconnect
+    const disconnectSpinner = ora('Disconnecting from Discord...').start();
+    await adapter.disconnect();
+    disconnectSpinner.succeed('Disconnected from Discord');
   }
 }
 

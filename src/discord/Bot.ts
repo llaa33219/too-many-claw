@@ -9,8 +9,13 @@ import {
   Message as DiscordMessage,
   TextChannel,
   Partials,
+  PermissionFlagsBits,
+  Webhook,
+  Collection,
+  Guild,
 } from 'discord.js';
 import { Message } from '../types/index.js';
+import { AgentDefinition } from '../types/index.js';
 import { getAgentById, getAllAgentIds } from '../agents/definitions.js';
 
 export interface BotConfig {
@@ -181,5 +186,160 @@ export class Bot {
    */
   get isConnected(): boolean {
     return this.client.isReady();
+  }
+
+  /**
+   * Detect guild ID from connected guilds
+   * Returns the first guild the bot is connected to, or the configured guildId
+   */
+  async detectGuildId(): Promise<string | null> {
+    if (!this.client.isReady()) {
+      return this.config.guildId || null;
+    }
+
+    // If we have a configured guildId, verify it exists
+    if (this.config.guildId) {
+      const guild = this.client.guilds.cache.get(this.config.guildId);
+      if (guild) {
+        return this.config.guildId;
+      }
+    }
+
+    // Otherwise, return the first guild
+    const firstGuild = this.client.guilds.cache.first();
+    return firstGuild?.id || null;
+  }
+
+  /**
+   * Get all connected guilds
+   */
+  getConnectedGuilds(): Collection<string, Guild> {
+    return this.client.guilds.cache;
+  }
+
+  /**
+   * Get existing webhooks in a channel
+   */
+  async getExistingWebhooks(channelId: string): Promise<Webhook[]> {
+    const channel = await this.client.channels.fetch(channelId);
+    if (!(channel instanceof TextChannel)) {
+      throw new Error('Channel is not a text channel');
+    }
+
+    // Check if bot has permission to manage webhooks
+    const permissions = channel.permissionsFor(this.client.user!);
+    if (!permissions?.has(PermissionFlagsBits.ManageWebhooks)) {
+      throw new Error('Bot does not have MANAGE_WEBHOOKS permission in this channel');
+    }
+
+    const webhooks = await channel.fetchWebhooks();
+    return Array.from(webhooks.values());
+  }
+
+  /**
+   * Check if bot has webhook management permission in a channel
+   */
+  async hasWebhookPermission(channelId: string): Promise<boolean> {
+    try {
+      const channel = await this.client.channels.fetch(channelId);
+      if (!(channel instanceof TextChannel)) {
+        return false;
+      }
+
+      const permissions = channel.permissionsFor(this.client.user!);
+      return permissions?.has(PermissionFlagsBits.ManageWebhooks) ?? false;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Auto-create webhooks for agents in a channel
+   * @param channelId - The channel to create webhooks in
+   * @param agents - Array of agent definitions to create webhooks for
+   * @param onProgress - Optional callback for progress updates
+   * @returns Record of agentId -> webhook URL
+   */
+  async autoCreateWebhooks(
+    channelId: string,
+    agents: AgentDefinition[],
+    onProgress?: (current: number, total: number, agentName: string) => void
+  ): Promise<Record<string, string>> {
+    const channel = await this.client.channels.fetch(channelId);
+    if (!(channel instanceof TextChannel)) {
+      throw new Error('Channel is not a text channel');
+    }
+
+    // Check permissions
+    const permissions = channel.permissionsFor(this.client.user!);
+    if (!permissions?.has(PermissionFlagsBits.ManageWebhooks)) {
+      throw new Error('Bot does not have MANAGE_WEBHOOKS permission in this channel');
+    }
+
+    // Get existing webhooks to avoid duplicates
+    const existingWebhooks = await channel.fetchWebhooks();
+    const webhooksByName = new Map<string, Webhook>();
+    for (const webhook of existingWebhooks.values()) {
+      if (webhook.name) {
+        webhooksByName.set(webhook.name, webhook);
+      }
+    }
+
+    const result: Record<string, string> = {};
+    let current = 0;
+    const total = agents.length;
+
+    for (const agent of agents) {
+      current++;
+      const webhookName = `${agent.emoji} ${agent.name}`;
+
+      if (onProgress) {
+        onProgress(current, total, agent.name);
+      }
+
+      // Check if webhook already exists
+      const existing = webhooksByName.get(webhookName);
+      if (existing) {
+        result[agent.id] = existing.url;
+        continue;
+      }
+
+      // Create new webhook
+      try {
+        const webhook = await channel.createWebhook({
+          name: webhookName,
+          reason: `Too Many Claw - Auto-created webhook for agent: ${agent.id}`,
+        });
+        result[agent.id] = webhook.url;
+
+        // Small delay to avoid rate limiting
+        await new Promise(resolve => setTimeout(resolve, 500));
+      } catch (error) {
+        console.error(`Failed to create webhook for ${agent.name}:`, error);
+        // Continue with other agents even if one fails
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Delete a webhook by URL
+   */
+  async deleteWebhook(webhookUrl: string): Promise<boolean> {
+    try {
+      // Extract webhook ID and token from URL
+      const match = webhookUrl.match(/webhooks\/(\d+)\/([\w-]+)/);
+      if (!match) {
+        return false;
+      }
+
+      const [, id, token] = match;
+      const webhook = await this.client.fetchWebhook(id, token);
+      await webhook.delete('Too Many Claw - Webhook cleanup');
+      return true;
+    } catch {
+      return false;
+    }
   }
 }

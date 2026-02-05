@@ -3,8 +3,8 @@
  * Implements PlatformAdapter interface for Discord
  */
 
-import { Message, PlatformAdapter } from '../types/index.js';
-import { getAgentById } from '../agents/definitions.js';
+import { Message, PlatformAdapter, AgentDefinition } from '../types/index.js';
+import { getAgentById, AGENT_DEFINITIONS } from '../agents/definitions.js';
 import { Bot, BotConfig } from './Bot.js';
 import { WebhookManager } from './WebhookManager.js';
 
@@ -109,5 +109,64 @@ export class DiscordAdapter implements PlatformAdapter {
    */
   get isConnected(): boolean {
     return this.bot.isConnected;
+  }
+
+  /**
+   * Detect guild ID from connected bot
+   */
+  async detectGuildId(): Promise<string | null> {
+    return this.bot.detectGuildId();
+  }
+
+  /**
+   * Get all connected guilds
+   */
+  getConnectedGuilds() {
+    return this.bot.getConnectedGuilds();
+  }
+
+  /**
+   * Check if bot has webhook permission in channel
+   */
+  async hasWebhookPermission(channelId: string): Promise<boolean> {
+    return this.bot.hasWebhookPermission(channelId);
+  }
+
+  /**
+   * Get existing webhooks in a channel
+   */
+  async getExistingWebhooks(channelId: string) {
+    return this.bot.getExistingWebhooks(channelId);
+  }
+
+  /**
+   * Auto-create webhooks for all agents
+   * @param channelId - Channel to create webhooks in
+   * @param onProgress - Progress callback
+   * @returns Record of agentId -> webhook URL
+   */
+  async autoCreateWebhooks(
+    channelId: string,
+    onProgress?: (current: number, total: number, agentName: string) => void
+  ): Promise<Record<string, string>> {
+    return this.bot.autoCreateWebhooks(channelId, AGENT_DEFINITIONS, onProgress);
+  }
+
+  /**
+   * Auto-create webhooks for specific agents
+   */
+  async autoCreateWebhooksForAgents(
+    channelId: string,
+    agents: AgentDefinition[],
+    onProgress?: (current: number, total: number, agentName: string) => void
+  ): Promise<Record<string, string>> {
+    return this.bot.autoCreateWebhooks(channelId, agents, onProgress);
+  }
+
+  /**
+   * Delete a webhook
+   */
+  async deleteWebhook(webhookUrl: string): Promise<boolean> {
+    return this.bot.deleteWebhook(webhookUrl);
   }
 }

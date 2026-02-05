@@ -14,14 +14,34 @@ export interface DiscordConfig {
 }
 
 /**
- * OpenClaw configuration structure (partial - only what we need)
+ * OpenClaw configuration structure (comprehensive)
  */
 export interface OpenClawDiscordConfig {
+  /** Whether Discord integration is enabled */
+  enabled?: boolean;
+  /** Discord bot token */
   token?: string;
+  /** Gateway intents */
   intents?: string[];
+  /** Guild/Server ID (may be stored as guildId or serverId) */
+  guildId?: string;
+  serverId?: string;
+  /** Allowlist configuration */
   allowlist?: {
     channels?: string[];
     users?: string[];
+    guilds?: string[];
+  };
+  /** Direct message settings */
+  dm?: {
+    enabled?: boolean;
+    allowFrom?: string[];
+  };
+  /** Channel configurations */
+  channels?: {
+    chat?: string;
+    status?: string;
+    default?: string;
   };
 }
 
@@ -31,6 +51,20 @@ export interface OpenClawGatewayConfig {
 
 export interface OpenClawConfig {
   gateway?: OpenClawGatewayConfig;
+  /** Some configs may store discord at root level */
+  discord?: OpenClawDiscordConfig;
+}
+
+/**
+ * Extracted Discord settings from OpenClaw (normalized)
+ */
+export interface ExtractedDiscordSettings {
+  token?: string;
+  guildId?: string;
+  chatChannelId?: string;
+  statusChannelId?: string;
+  allowedChannels?: string[];
+  allowedUsers?: string[];
 }
 
 export interface TooManyClawConfig {
@@ -211,11 +245,64 @@ export class ConfigManager {
   }
 
   /**
-   * Get Discord settings from OpenClaw config
+   * Get raw Discord settings from OpenClaw config
    */
   getOpenClawDiscordConfig(): OpenClawDiscordConfig | null {
     const config = this.readOpenClawConfig();
-    return config?.gateway?.discord ?? null;
+    // Check both gateway.discord and root discord
+    return config?.gateway?.discord ?? config?.discord ?? null;
+  }
+
+  /**
+   * Extract and normalize Discord settings from OpenClaw config
+   * Returns a clean, normalized structure regardless of how OpenClaw stores it
+   */
+  extractOpenClawDiscordSettings(): ExtractedDiscordSettings | null {
+    const discord = this.getOpenClawDiscordConfig();
+    if (!discord) return null;
+
+    const settings: ExtractedDiscordSettings = {};
+
+    // Extract token
+    if (discord.token) {
+      settings.token = discord.token;
+    }
+
+    // Extract guildId (may be stored as guildId, serverId, or in allowlist.guilds)
+    if (discord.guildId) {
+      settings.guildId = discord.guildId;
+    } else if (discord.serverId) {
+      settings.guildId = discord.serverId;
+    } else if (discord.allowlist?.guilds && discord.allowlist.guilds.length > 0) {
+      settings.guildId = discord.allowlist.guilds[0];
+    }
+
+    // Extract channels
+    if (discord.channels?.chat) {
+      settings.chatChannelId = discord.channels.chat;
+    } else if (discord.channels?.default) {
+      settings.chatChannelId = discord.channels.default;
+    } else if (discord.allowlist?.channels && discord.allowlist.channels.length > 0) {
+      settings.chatChannelId = discord.allowlist.channels[0];
+    }
+
+    if (discord.channels?.status) {
+      settings.statusChannelId = discord.channels.status;
+    } else if (discord.allowlist?.channels && discord.allowlist.channels.length > 1) {
+      settings.statusChannelId = discord.allowlist.channels[1];
+    }
+
+    // Store all allowed channels for reference
+    if (discord.allowlist?.channels) {
+      settings.allowedChannels = [...discord.allowlist.channels];
+    }
+
+    // Store allowed users
+    if (discord.allowlist?.users) {
+      settings.allowedUsers = [...discord.allowlist.users];
+    }
+
+    return settings;
   }
 
   /**
@@ -223,9 +310,9 @@ export class ConfigManager {
    * Returns true if successful, false if no OpenClaw Discord config found
    */
   importFromOpenClaw(): { success: boolean; imported: Partial<DiscordConfig>; message: string } {
-    const openclawDiscord = this.getOpenClawDiscordConfig();
+    const extracted = this.extractOpenClawDiscordSettings();
 
-    if (!openclawDiscord) {
+    if (!extracted) {
       return {
         success: false,
         imported: {},
@@ -236,16 +323,23 @@ export class ConfigManager {
     const imported: Partial<DiscordConfig> = {};
 
     // Import token
-    if (openclawDiscord.token) {
-      imported.token = openclawDiscord.token;
+    if (extracted.token) {
+      imported.token = extracted.token;
     }
 
-    // Import allowed channels (first as chat, second as status if available)
-    if (openclawDiscord.allowlist?.channels && openclawDiscord.allowlist.channels.length > 0) {
-      imported.chatChannelId = openclawDiscord.allowlist.channels[0];
-      if (openclawDiscord.allowlist.channels.length > 1) {
-        imported.statusChannelId = openclawDiscord.allowlist.channels[1];
-      }
+    // Import guildId
+    if (extracted.guildId) {
+      imported.guildId = extracted.guildId;
+    }
+
+    // Import chat channel
+    if (extracted.chatChannelId) {
+      imported.chatChannelId = extracted.chatChannelId;
+    }
+
+    // Import status channel
+    if (extracted.statusChannelId) {
+      imported.statusChannelId = extracted.statusChannelId;
     }
 
     if (Object.keys(imported).length === 0) {
@@ -267,6 +361,55 @@ export class ConfigManager {
       success: true,
       imported,
       message: `Imported ${Object.keys(imported).length} setting(s) from OpenClaw`,
+    };
+  }
+
+  /**
+   * Update guildId after bot connects and detects it
+   * This is called when the bot auto-detects the guild from connection
+   */
+  updateGuildId(guildId: string): void {
+    const currentDiscord = this.getDiscordConfig();
+    if (!currentDiscord.guildId) {
+      this.setDiscordConfig({
+        ...currentDiscord,
+        guildId,
+      });
+    }
+  }
+
+  /**
+   * Get summary of what can be imported from OpenClaw
+   * Useful for displaying to user before import
+   */
+  getOpenClawImportSummary(): {
+    hasConfig: boolean;
+    availableSettings: string[];
+    extracted: ExtractedDiscordSettings | null;
+  } {
+    const extracted = this.extractOpenClawDiscordSettings();
+    
+    if (!extracted) {
+      return {
+        hasConfig: false,
+        availableSettings: [],
+        extracted: null,
+      };
+    }
+
+    const availableSettings: string[] = [];
+    if (extracted.token) availableSettings.push('Bot Token');
+    if (extracted.guildId) availableSettings.push('Server (Guild) ID');
+    if (extracted.chatChannelId) availableSettings.push('Chat Channel');
+    if (extracted.statusChannelId) availableSettings.push('Status Channel');
+    if (extracted.allowedChannels && extracted.allowedChannels.length > 0) {
+      availableSettings.push(`${extracted.allowedChannels.length} Allowed Channel(s)`);
+    }
+
+    return {
+      hasConfig: true,
+      availableSettings,
+      extracted,
     };
   }
 
