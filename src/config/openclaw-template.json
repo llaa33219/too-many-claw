@@ -1,0 +1,363 @@
+{
+  "tools": {
+    "agentToAgent": {
+      "enabled": true,
+      "allow": [
+        "base",
+        "searcher",
+        "tech-researcher",
+        "trend-analyst",
+        "data-provider",
+        "counselor",
+        "user-psychologist",
+        "questioner",
+        "persuader",
+        "educator",
+        "planner",
+        "team-composer",
+        "promoter",
+        "uploader",
+        "backend-dev",
+        "frontend-dev",
+        "designer",
+        "code-reviewer",
+        "doc-writer",
+        "automator",
+        "prompt-engineer",
+        "ai-illustrator",
+        "program-tester",
+        "user-tester",
+        "security-checker",
+        "vuln-finder",
+        "pentester",
+        "fact-bomber",
+        "roaster",
+        "critic",
+        "negativist",
+        "praiser",
+        "loophole-finder",
+        "threatener",
+        "dirty-worker"
+      ]
+    }
+  },
+  "agents": {
+    "list": [
+      {
+        "id": "base",
+        "name": "🏠 Base",
+        "model": "claude-opus-4-5",
+        "workspace": "~/.openclaw/workspace-base",
+        "subagents": {
+          "allowAgents": ["searcher", "tech-researcher", "trend-analyst", "data-provider", "counselor", "user-psychologist", "questioner", "persuader", "educator", "planner", "team-composer", "promoter", "uploader", "backend-dev", "frontend-dev", "designer", "code-reviewer", "doc-writer", "automator", "prompt-engineer", "ai-illustrator", "program-tester", "user-tester", "security-checker", "vuln-finder", "pentester", "fact-bomber", "roaster", "critic", "negativist", "praiser", "loophole-finder", "threatener", "dirty-worker"]
+        }
+      },
+      {
+        "id": "searcher",
+        "name": "🔍 검색 전문가",
+        "model": "claude-sonnet-4-5",
+        "workspace": "~/.openclaw/workspace-searcher",
+        "subagents": {
+          "allowAgents": ["base", "tech-researcher", "data-provider", "fact-bomber"]
+        }
+      },
+      {
+        "id": "tech-researcher",
+        "name": "🔬 최신 기술 조사 전문가",
+        "model": "claude-sonnet-4-5",
+        "workspace": "~/.openclaw/workspace-tech-researcher",
+        "subagents": {
+          "allowAgents": ["base", "searcher", "backend-dev", "frontend-dev", "critic"]
+        }
+      },
+      {
+        "id": "trend-analyst",
+        "name": "📈 유행 분석 전문가",
+        "model": "claude-sonnet-4-5",
+        "workspace": "~/.openclaw/workspace-trend-analyst",
+        "subagents": {
+          "allowAgents": ["base", "data-provider", "promoter", "negativist"]
+        }
+      },
+      {
+        "id": "data-provider",
+        "name": "📊 데이터 마련 전문가",
+        "model": "claude-sonnet-4-5",
+        "workspace": "~/.openclaw/workspace-data-provider",
+        "subagents": {
+          "allowAgents": ["base", "trend-analyst", "fact-bomber", "backend-dev"]
+        }
+      },
+      {
+        "id": "counselor",
+        "name": "💚 심리 상담가",
+        "model": "claude-sonnet-4-5",
+        "workspace": "~/.openclaw/workspace-counselor",
+        "subagents": {
+          "allowAgents": ["base", "praiser", "roaster", "threatener"]
+        }
+      },
+      {
+        "id": "user-psychologist",
+        "name": "🧠 사용자 심리 분석가",
+        "model": "claude-opus-4-5",
+        "workspace": "~/.openclaw/workspace-user-psychologist",
+        "subagents": {
+          "allowAgents": ["base", "questioner", "planner", "designer"]
+        }
+      },
+      {
+        "id": "questioner",
+        "name": "❓ 질문 전문가",
+        "model": "claude-sonnet-4-5",
+        "workspace": "~/.openclaw/workspace-questioner",
+        "subagents": {
+          "allowAgents": ["base", "user-psychologist", "planner"]
+        }
+      },
+      {
+        "id": "persuader",
+        "name": "🎯 합리적 설득 전문가",
+        "model": "claude-sonnet-4-5",
+        "workspace": "~/.openclaw/workspace-persuader",
+        "subagents": {
+          "allowAgents": ["base", "critic", "negativist", "roaster"]
+        }
+      },
+      {
+        "id": "educator",
+        "name": "📚 교육 전문가",
+        "model": "claude-sonnet-4-5",
+        "workspace": "~/.openclaw/workspace-educator",
+        "subagents": {
+          "allowAgents": ["base", "doc-writer", "user-tester"]
+        }
+      },
+      {
+        "id": "planner",
+        "name": "📋 전문적인 계획 전문가",
+        "model": "claude-opus-4-5",
+        "workspace": "~/.openclaw/workspace-planner",
+        "subagents": {
+          "allowAgents": ["base", "team-composer", "critic", "negativist"]
+        }
+      },
+      {
+        "id": "team-composer",
+        "name": "👥 에이전트 팀 구성 전문가",
+        "model": "claude-sonnet-4-5",
+        "workspace": "~/.openclaw/workspace-team-composer",
+        "subagents": {
+          "allowAgents": ["base", "planner"]
+        }
+      },
+      {
+        "id": "promoter",
+        "name": "📢 홍보 전문가",
+        "model": "claude-sonnet-4-5",
+        "workspace": "~/.openclaw/workspace-promoter",
+        "subagents": {
+          "allowAgents": ["base", "trend-analyst", "designer", "uploader"]
+        }
+      },
+      {
+        "id": "uploader",
+        "name": "⬆️ 업로더",
+        "model": "claude-haiku-4-5",
+        "workspace": "~/.openclaw/workspace-uploader",
+        "subagents": {
+          "allowAgents": ["base", "program-tester", "security-checker"]
+        }
+      },
+      {
+        "id": "backend-dev",
+        "name": "⚙️ 백엔드 개발자",
+        "model": "claude-sonnet-4-5",
+        "workspace": "~/.openclaw/workspace-backend-dev",
+        "subagents": {
+          "allowAgents": ["base", "frontend-dev", "code-reviewer", "security-checker"]
+        }
+      },
+      {
+        "id": "frontend-dev",
+        "name": "🎨 프론트엔드 개발자",
+        "model": "claude-sonnet-4-5",
+        "workspace": "~/.openclaw/workspace-frontend-dev",
+        "subagents": {
+          "allowAgents": ["base", "designer", "backend-dev", "user-tester"]
+        }
+      },
+      {
+        "id": "designer",
+        "name": "🖌️ 전문 디자이너",
+        "model": "claude-sonnet-4-5",
+        "workspace": "~/.openclaw/workspace-designer",
+        "subagents": {
+          "allowAgents": ["base", "user-psychologist", "frontend-dev", "user-tester"]
+        }
+      },
+      {
+        "id": "code-reviewer",
+        "name": "👀 코드 리뷰어",
+        "model": "claude-sonnet-4-5",
+        "workspace": "~/.openclaw/workspace-code-reviewer",
+        "subagents": {
+          "allowAgents": ["base", "backend-dev", "frontend-dev", "program-tester"]
+        }
+      },
+      {
+        "id": "doc-writer",
+        "name": "📝 문서 작성 전문가",
+        "model": "claude-sonnet-4-5",
+        "workspace": "~/.openclaw/workspace-doc-writer",
+        "subagents": {
+          "allowAgents": ["base", "educator", "user-tester"]
+        }
+      },
+      {
+        "id": "automator",
+        "name": "🤖 자동화 전문가",
+        "model": "claude-sonnet-4-5",
+        "workspace": "~/.openclaw/workspace-automator",
+        "subagents": {
+          "allowAgents": ["base", "dirty-worker", "backend-dev", "program-tester"]
+        }
+      },
+      {
+        "id": "prompt-engineer",
+        "name": "💬 프롬프트 엔지니어",
+        "model": "claude-sonnet-4-5",
+        "workspace": "~/.openclaw/workspace-prompt-engineer",
+        "subagents": {
+          "allowAgents": ["base", "ai-illustrator"]
+        }
+      },
+      {
+        "id": "ai-illustrator",
+        "name": "🎭 AI 일러스트 생성 전문가",
+        "model": "claude-sonnet-4-5",
+        "workspace": "~/.openclaw/workspace-ai-illustrator",
+        "subagents": {
+          "allowAgents": ["base", "designer", "prompt-engineer", "promoter"]
+        }
+      },
+      {
+        "id": "program-tester",
+        "name": "🧪 프로그램 테스트 전문가",
+        "model": "claude-sonnet-4-5",
+        "workspace": "~/.openclaw/workspace-program-tester",
+        "subagents": {
+          "allowAgents": ["base", "backend-dev", "automator", "uploader"]
+        }
+      },
+      {
+        "id": "user-tester",
+        "name": "👤 일반 사용자 테스트 전문가",
+        "model": "claude-sonnet-4-5",
+        "workspace": "~/.openclaw/workspace-user-tester",
+        "subagents": {
+          "allowAgents": ["base", "designer", "frontend-dev", "doc-writer"]
+        }
+      },
+      {
+        "id": "security-checker",
+        "name": "🛡️ 보안 체크 전문가",
+        "model": "claude-sonnet-4-5",
+        "workspace": "~/.openclaw/workspace-security-checker",
+        "subagents": {
+          "allowAgents": ["base", "vuln-finder", "pentester", "backend-dev"]
+        }
+      },
+      {
+        "id": "vuln-finder",
+        "name": "🔓 취약점 찾기 전문가",
+        "model": "claude-sonnet-4-5",
+        "workspace": "~/.openclaw/workspace-vuln-finder",
+        "subagents": {
+          "allowAgents": ["base", "security-checker", "pentester", "backend-dev"]
+        }
+      },
+      {
+        "id": "pentester",
+        "name": "💀 모의해킹 전문가",
+        "model": "claude-opus-4-5",
+        "workspace": "~/.openclaw/workspace-pentester",
+        "subagents": {
+          "allowAgents": ["base", "security-checker", "vuln-finder", "backend-dev"]
+        }
+      },
+      {
+        "id": "fact-bomber",
+        "name": "💣 팩트폭행 전문가",
+        "model": "claude-sonnet-4-5",
+        "workspace": "~/.openclaw/workspace-fact-bomber",
+        "subagents": {
+          "allowAgents": ["base", "searcher", "data-provider"]
+        }
+      },
+      {
+        "id": "roaster",
+        "name": "🔥 독설가",
+        "model": "claude-sonnet-4-5",
+        "workspace": "~/.openclaw/workspace-roaster",
+        "subagents": {
+          "allowAgents": ["base", "counselor", "praiser"]
+        }
+      },
+      {
+        "id": "critic",
+        "name": "🧐 비판가",
+        "model": "claude-opus-4-5",
+        "workspace": "~/.openclaw/workspace-critic",
+        "subagents": {
+          "allowAgents": ["base", "planner", "praiser"]
+        }
+      },
+      {
+        "id": "negativist",
+        "name": "👎 부정적인 에이전트",
+        "model": "claude-sonnet-4-5",
+        "workspace": "~/.openclaw/workspace-negativist",
+        "subagents": {
+          "allowAgents": ["base", "praiser", "planner"]
+        }
+      },
+      {
+        "id": "praiser",
+        "name": "👏 칭찬 전문가",
+        "model": "claude-haiku-4-5",
+        "workspace": "~/.openclaw/workspace-praiser",
+        "subagents": {
+          "allowAgents": ["base", "roaster", "critic", "negativist", "counselor"]
+        }
+      },
+      {
+        "id": "loophole-finder",
+        "name": "🕳️ 꼼수 찾기 전문가",
+        "model": "claude-sonnet-4-5",
+        "workspace": "~/.openclaw/workspace-loophole-finder",
+        "subagents": {
+          "allowAgents": ["base", "planner", "security-checker"]
+        }
+      },
+      {
+        "id": "threatener",
+        "name": "⚡ 협박 전문가",
+        "model": "claude-sonnet-4-5",
+        "workspace": "~/.openclaw/workspace-threatener",
+        "subagents": {
+          "allowAgents": ["base", "counselor", "praiser", "dirty-worker"]
+        }
+      },
+      {
+        "id": "dirty-worker",
+        "name": "🪠 더티워커",
+        "model": "claude-haiku-4-5",
+        "workspace": "~/.openclaw/workspace-dirty-worker",
+        "subagents": {
+          "allowAgents": ["base", "automator", "threatener", "praiser"]
+        }
+      }
+    ]
+  }
+}
