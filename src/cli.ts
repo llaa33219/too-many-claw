@@ -345,7 +345,7 @@ program
       // Show webhook mode status (only on success)
       if (registrationResult.webhookModeConfigured) {
         console.log(chalk.green('  ✓ Webhook-only mode enabled'));
-        console.log(chalk.gray('    OpenClaw bot direct replies disabled - only TMC webhooks will respond\n'));
+        console.log(chalk.gray('    OpenClaw bot message sending disabled - only TMC webhooks will respond\n'));
       } else {
         console.log(chalk.gray('  • Webhook-only mode already configured\n'));
       }

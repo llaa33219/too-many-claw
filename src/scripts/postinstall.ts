@@ -45,7 +45,7 @@ async function postinstall(): Promise<void> {
   }
   
   if (result.webhookModeConfigured) {
-    console.log('✓ Configured webhook-only mode (disabled OpenClaw direct Discord replies)');
+    console.log('✓ Configured webhook-only mode (disabled OpenClaw direct Discord messages)');
   }
   
   console.log('✓ Created SKILL.md');
@@ -120,8 +120,40 @@ async function mergeOpenclawConfig(configPath: string): Promise<{ newlyAdded: st
     channels.discord = {};
   }
   const discordChannel = channels.discord as Record<string, unknown>;
+  
+  // Set replyToMode to 'off' to disable reply threading
   if (discordChannel.replyToMode !== 'off') {
     discordChannel.replyToMode = 'off';
+    webhookModeConfigured = true;
+  }
+  
+  // Disable Discord message sending action - this is the key setting!
+  // This prevents OpenClaw bot from sending messages directly to Discord
+  // Only TMC webhooks will respond
+  // 
+  // We set this in two places to ensure it works:
+  // 1. channels.discord.actions.messages - channel-level setting
+  // 2. discord.actions.messages - tool/skill-level setting (top-level)
+  if (!discordChannel.actions) {
+    discordChannel.actions = {};
+  }
+  const discordActions = discordChannel.actions as Record<string, unknown>;
+  if (discordActions.messages !== false) {
+    discordActions.messages = false;
+    webhookModeConfigured = true;
+  }
+
+  // Also set at top-level discord.actions for tool/skill configuration
+  if (!config.discord) {
+    config.discord = {};
+  }
+  const discordRoot = config.discord as Record<string, unknown>;
+  if (!discordRoot.actions) {
+    discordRoot.actions = {};
+  }
+  const discordRootActions = discordRoot.actions as Record<string, unknown>;
+  if (discordRootActions.messages !== false) {
+    discordRootActions.messages = false;
     webhookModeConfigured = true;
   }
 
