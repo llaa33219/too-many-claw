@@ -18,6 +18,7 @@ import { DiscordAdapter } from './discord/DiscordAdapter.js';
 import { Orchestrator } from './core/Orchestrator.js';
 import { AgentCategory, ModelTier } from './types/index.js';
 import { OpenClawDaemon } from './daemon/index.js';
+import { registerTmcAgents } from './scripts/postinstall.js';
 
 // ============================================
 // Daemon PID File Management
@@ -188,7 +189,7 @@ program
     const config = new ConfigManager();
 
     // Step 1: Auto-import from OpenClaw
-    console.log(chalk.cyan('\n📋 Step 1/3: Discord Configuration\n'));
+    console.log(chalk.cyan('\n📋 Step 1/4: Discord Configuration\n'));
     
     if (config.hasOpenClawDiscordConfig()) {
       console.log(chalk.green('✓ OpenClaw Discord configuration detected!'));
@@ -247,8 +248,8 @@ program
       console.log(chalk.green('\n✓ Discord is already configured!'));
     }
 
-    // Step 3: Auto-create single base webhook
-    console.log(chalk.cyan('\n📋 Step 2/3: Webhook Configuration\n'));
+    // Step 2: Auto-create single base webhook
+    console.log(chalk.cyan('\n📋 Step 2/4: Webhook Configuration\n'));
 
     const discordConfig = config.getDiscordConfig();
     
@@ -321,8 +322,27 @@ program
       }
     }
 
-    // Step 4: Start daemon?
-    console.log(chalk.cyan('📋 Step 3/3: Daemon Setup\n'));
+    // Step 4: Register agents to OpenClaw
+    console.log(chalk.cyan('📋 Step 3/4: Agent Registration\n'));
+    console.log(chalk.gray('Registering TMC agents to OpenClaw configuration...\n'));
+
+    const agentSpinner = ora('Registering agents...').start();
+    const registrationResult = await registerTmcAgents();
+
+    if (!registrationResult.success) {
+      agentSpinner.fail('Failed to register agents');
+      console.log(chalk.red(`Error: ${registrationResult.error}\n`));
+    } else if (registrationResult.newlyAdded.length > 0) {
+      agentSpinner.succeed(`Registered ${registrationResult.newlyAdded.length} new agent(s)`);
+      console.log(chalk.green(`  • New: ${registrationResult.newlyAdded.slice(0, 5).join(', ')}${registrationResult.newlyAdded.length > 5 ? ` and ${registrationResult.newlyAdded.length - 5} more` : ''}`));
+      console.log(chalk.gray(`  • Already registered: ${registrationResult.alreadyExisted.length} agent(s)\n`));
+    } else {
+      agentSpinner.succeed('All agents already registered');
+      console.log(chalk.gray(`  ${registrationResult.totalAgents} agents configured in OpenClaw\n`));
+    }
+
+    // Step 5: Start daemon?
+    console.log(chalk.cyan('📋 Step 4/4: Daemon Setup\n'));
     console.log(chalk.gray('The daemon auto-forwards OpenClaw agent responses to Discord.\n'));
 
     const { startDaemon } = await inquirer.prompt([{

@@ -12,59 +12,44 @@ import { SOUL_TEMPLATES } from '../agents/souls/index.js';
 
 const OPENCLAW_DIR = path.join(os.homedir(), '.openclaw');
 
+/**
+ * Result of agent registration
+ */
+export interface AgentRegistrationResult {
+  success: boolean;
+  totalAgents: number;
+  newlyAdded: string[];      // agent IDs that were newly added
+  alreadyExisted: string[];  // agent IDs that already existed
+  workspacesCreated: number;
+  error?: string;
+}
+
 async function postinstall(): Promise<void> {
   console.log('🦀 Too Many Claw - Setting up...\n');
 
-  try {
-    // 1. Create ~/.openclaw directory
-    await fs.ensureDir(OPENCLAW_DIR);
-    console.log('✓ Created ~/.openclaw directory');
+  const result = await registerTmcAgents();
 
-    // 2. Create 35 workspace directories with SOUL.md
-    for (const agent of AGENT_DEFINITIONS) {
-      const workspacePath = path.join(OPENCLAW_DIR, `workspace-${agent.id}`);
-      await fs.ensureDir(workspacePath);
-
-      const soulPath = path.join(workspacePath, 'SOUL.md');
-      if (!await fs.pathExists(soulPath)) {
-        const soulContent = SOUL_TEMPLATES[agent.id] || generateBasicSoul(agent);
-        await fs.writeFile(soulPath, soulContent, 'utf-8');
-      }
-    }
-    console.log(`✓ Created ${AGENT_DEFINITIONS.length} workspace directories`);
-
-    // 3. Create or merge openclaw.json
-    const openclawPath = path.join(OPENCLAW_DIR, 'openclaw.json');
-    await mergeOpenclawConfig(openclawPath);
-    console.log('✓ Updated openclaw.json');
-
-    // 4. Create SKILL.md
-    const skillPath = path.join(OPENCLAW_DIR, 'skills', 'too-many-claw', 'SKILL.md');
-    await fs.ensureDir(path.dirname(skillPath));
-    await fs.writeFile(skillPath, generateSkillMd(), 'utf-8');
-    console.log('✓ Created SKILL.md');
-
-    // 5. Create default config
-    const configPath = path.join(OPENCLAW_DIR, 'too-many-claw.json');
-    if (!await fs.pathExists(configPath)) {
-      await fs.writeJson(configPath, {
-        discord: {},
-        webhooks: {},
-        simulation: { enabled: false },
-      }, { spaces: 2 });
-      console.log('✓ Created too-many-claw.json');
-    }
-
-    console.log('\n🦀 Too Many Claw setup complete!');
-    console.log('\nNext steps:');
-    console.log('  1. Run `tmc setup-discord` to configure Discord');
-    console.log('  2. Run `tmc simulate` to test locally');
-    console.log('  3. Run `tmc start` to start the Discord bot\n');
-
-  } catch (error) {
-    console.error('Setup failed:', error);
+  if (!result.success) {
+    console.error('Setup failed:', result.error);
     process.exit(1);
   }
+
+  console.log('✓ Created ~/.openclaw directory');
+  console.log(`✓ Created ${result.totalAgents} workspace directories`);
+  
+  if (result.newlyAdded.length > 0) {
+    console.log(`✓ Added ${result.newlyAdded.length} agents to openclaw.json`);
+  } else {
+    console.log('✓ All agents already registered in openclaw.json');
+  }
+  
+  console.log('✓ Created SKILL.md');
+
+  console.log('\n🦀 Too Many Claw setup complete!');
+  console.log('\nNext steps:');
+  console.log('  1. Run `tmc setup` to configure Discord and webhooks');
+  console.log('  2. Run `tmc simulate` to test locally');
+  console.log('  3. Run `tmc daemon run` to start the webhook daemon\n');
 }
 
 function generateBasicSoul(agent: typeof AGENT_DEFINITIONS[0]): string {
@@ -91,8 +76,14 @@ ${agent.role}
 `;
 }
 
-async function mergeOpenclawConfig(configPath: string): Promise<void> {
+/**
+ * Merge TMC agents into OpenClaw configuration
+ * Returns information about which agents were added
+ */
+async function mergeOpenclawConfig(configPath: string): Promise<{ newlyAdded: string[]; alreadyExisted: string[] }> {
   let config: Record<string, unknown> = {};
+  const newlyAdded: string[] = [];
+  const alreadyExisted: string[] = [];
 
   // Backup existing config
   if (await fs.pathExists(configPath)) {
@@ -105,12 +96,13 @@ async function mergeOpenclawConfig(configPath: string): Promise<void> {
   if (!config.tools) {
     config.tools = {};
   }
-  if (!(config.tools as Record<string, unknown>).agentToAgent) {
-    (config.tools as Record<string, unknown>).agentToAgent = {
-      enabled: true,
-      allow: AGENT_DEFINITIONS.map(a => a.id),
-    };
-  }
+  
+  // Always update agentToAgent.allow to include all TMC agents
+  // This ensures new agents added in updates are properly allowed
+  (config.tools as Record<string, unknown>).agentToAgent = {
+    enabled: ((config.tools as Record<string, unknown>).agentToAgent as Record<string, unknown>)?.enabled ?? true,
+    allow: AGENT_DEFINITIONS.map(a => a.id),
+  };
 
   if (!config.agents) {
     config.agents = { list: [] };
@@ -119,7 +111,7 @@ async function mergeOpenclawConfig(configPath: string): Promise<void> {
   const agentList = (config.agents as Record<string, unknown[]>).list || [];
   const existingIds = new Set(agentList.map((a: unknown) => (a as Record<string, string>).id));
 
-  // Add missing agents
+  // Add missing agents and track which were added
   for (const agent of AGENT_DEFINITIONS) {
     if (!existingIds.has(agent.id)) {
       agentList.push({
@@ -131,12 +123,80 @@ async function mergeOpenclawConfig(configPath: string): Promise<void> {
           allowAgents: ['*'],
         },
       });
+      newlyAdded.push(agent.id);
+    } else {
+      alreadyExisted.push(agent.id);
     }
   }
 
   (config.agents as Record<string, unknown>).list = agentList;
 
   await fs.writeJson(configPath, config, { spaces: 2 });
+  
+  return { newlyAdded, alreadyExisted };
+}
+
+/**
+ * Register TMC agents to OpenClaw configuration
+ * Creates workspace directories and adds agents to openclaw.json
+ * Can be called from postinstall or from `tmc setup`
+ */
+export async function registerTmcAgents(): Promise<AgentRegistrationResult> {
+  const result: AgentRegistrationResult = {
+    success: false,
+    totalAgents: AGENT_DEFINITIONS.length,
+    newlyAdded: [],
+    alreadyExisted: [],
+    workspacesCreated: 0,
+  };
+
+  try {
+    // 1. Ensure ~/.openclaw directory exists
+    await fs.ensureDir(OPENCLAW_DIR);
+
+    // 2. Create workspace directories with SOUL.md
+    for (const agent of AGENT_DEFINITIONS) {
+      const workspacePath = path.join(OPENCLAW_DIR, `workspace-${agent.id}`);
+      const existed = await fs.pathExists(workspacePath);
+      await fs.ensureDir(workspacePath);
+
+      const soulPath = path.join(workspacePath, 'SOUL.md');
+      if (!await fs.pathExists(soulPath)) {
+        const soulContent = SOUL_TEMPLATES[agent.id] || generateBasicSoul(agent);
+        await fs.writeFile(soulPath, soulContent, 'utf-8');
+        if (!existed) {
+          result.workspacesCreated++;
+        }
+      }
+    }
+
+    // 3. Merge agents into openclaw.json
+    const openclawPath = path.join(OPENCLAW_DIR, 'openclaw.json');
+    const mergeResult = await mergeOpenclawConfig(openclawPath);
+    result.newlyAdded = mergeResult.newlyAdded;
+    result.alreadyExisted = mergeResult.alreadyExisted;
+
+    // 4. Create SKILL.md
+    const skillPath = path.join(OPENCLAW_DIR, 'skills', 'too-many-claw', 'SKILL.md');
+    await fs.ensureDir(path.dirname(skillPath));
+    await fs.writeFile(skillPath, generateSkillMd(), 'utf-8');
+
+    // 5. Create default TMC config if it doesn't exist
+    const configPath = path.join(OPENCLAW_DIR, 'too-many-claw.json');
+    if (!await fs.pathExists(configPath)) {
+      await fs.writeJson(configPath, {
+        discord: {},
+        webhooks: {},
+        simulation: { enabled: false },
+      }, { spaces: 2 });
+    }
+
+    result.success = true;
+  } catch (error) {
+    result.error = error instanceof Error ? error.message : 'Unknown error';
+  }
+
+  return result;
 }
 
 function generateSkillMd(): string {
