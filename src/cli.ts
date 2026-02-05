@@ -7,6 +7,10 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
 import inquirer from 'inquirer';
+import { spawn, execSync } from 'child_process';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
 import { TerminalUI } from './simulation/TerminalUI.js';
 import { ConfigManager } from './config/ConfigManager.js';
 import { AGENT_DEFINITIONS } from './agents/definitions.js';
@@ -14,6 +18,152 @@ import { DiscordAdapter } from './discord/DiscordAdapter.js';
 import { Orchestrator } from './core/Orchestrator.js';
 import { AgentCategory } from './types/index.js';
 import { OpenClawDaemon } from './daemon/index.js';
+
+// ============================================
+// Daemon PID File Management
+// ============================================
+
+const PID_FILE_PATH = path.join(os.homedir(), '.openclaw', 'tmc-daemon.pid');
+const SYSTEMD_SERVICE_PATH = '/etc/systemd/system/tmc-daemon.service';
+
+/**
+ * Get the path to the TMC executable
+ */
+function getTmcBinaryPath(): string {
+  // Try to find the tmc binary
+  try {
+    const npmGlobalBin = execSync('npm bin -g', { encoding: 'utf8' }).trim();
+    const tmcPath = path.join(npmGlobalBin, 'tmc');
+    if (fs.existsSync(tmcPath)) {
+      return tmcPath;
+    }
+  } catch {
+    // Ignore
+  }
+  
+  // Fallback to which command
+  try {
+    return execSync('which tmc', { encoding: 'utf8' }).trim();
+  } catch {
+    // Fallback to process.argv[1] (current script)
+    return process.argv[1];
+  }
+}
+
+/**
+ * Write PID to file
+ */
+function writePidFile(pid: number): void {
+  const dir = path.dirname(PID_FILE_PATH);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  fs.writeFileSync(PID_FILE_PATH, pid.toString(), 'utf8');
+}
+
+/**
+ * Read PID from file
+ */
+function readPidFile(): number | null {
+  try {
+    if (fs.existsSync(PID_FILE_PATH)) {
+      const pid = parseInt(fs.readFileSync(PID_FILE_PATH, 'utf8').trim(), 10);
+      return isNaN(pid) ? null : pid;
+    }
+  } catch {
+    // Ignore
+  }
+  return null;
+}
+
+/**
+ * Remove PID file
+ */
+function removePidFile(): void {
+  try {
+    if (fs.existsSync(PID_FILE_PATH)) {
+      fs.unlinkSync(PID_FILE_PATH);
+    }
+  } catch {
+    // Ignore
+  }
+}
+
+/**
+ * Check if a process is running by PID
+ */
+function isProcessRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Get daemon status
+ */
+function getDaemonStatus(): { running: boolean; pid: number | null; systemdInstalled: boolean; systemdActive: boolean } {
+  const pid = readPidFile();
+  const running = pid !== null && isProcessRunning(pid);
+  
+  let systemdInstalled = false;
+  let systemdActive = false;
+  
+  try {
+    systemdInstalled = fs.existsSync(SYSTEMD_SERVICE_PATH);
+    if (systemdInstalled) {
+      const status = execSync('systemctl is-active tmc-daemon 2>/dev/null || true', { encoding: 'utf8' }).trim();
+      systemdActive = status === 'active';
+    }
+  } catch {
+    // Ignore
+  }
+  
+  return { running, pid, systemdInstalled, systemdActive };
+}
+
+/**
+ * Generate systemd service file content
+ */
+function generateSystemdService(): string {
+  const tmcPath = getTmcBinaryPath();
+  const nodePath = process.execPath;
+  const user = os.userInfo().username;
+  const homeDir = os.homedir();
+  
+  return `[Unit]
+Description=Too Many Claw - OpenClaw Webhook Daemon
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${user}
+WorkingDirectory=${homeDir}
+ExecStart=${nodePath} ${tmcPath} daemon run
+Restart=always
+RestartSec=10
+Environment=NODE_ENV=production
+Environment=HOME=${homeDir}
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tmc-daemon
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=${homeDir}/.openclaw
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+`;
+}
 
 const program = new Command();
 
@@ -954,12 +1104,61 @@ program
   });
 
 // Daemon mode - auto-connect to OpenClaw and forward messages via webhooks
-program
+const daemonCommand = program
   .command('daemon')
-  .description('Run daemon mode to auto-connect to OpenClaw and forward agent messages via webhooks')
+  .description('Manage the TMC daemon for auto-forwarding agent messages via webhooks');
+
+// tmc daemon run (or just tmc daemon with --detach)
+daemonCommand
+  .command('run', { isDefault: true })
+  .description('Run daemon mode to auto-connect to OpenClaw and forward agent messages')
   .option('-v, --verbose', 'Enable verbose logging')
   .option('--url <url>', 'OpenClaw Gateway URL', 'ws://127.0.0.1:18789')
+  .option('-d, --detach', 'Run daemon in background')
   .action(async (options) => {
+    // Handle detach mode - fork to background
+    if (options.detach) {
+      const status = getDaemonStatus();
+      
+      if (status.running) {
+        console.log(chalk.yellow(`\n⚠ Daemon is already running (PID: ${status.pid})\n`));
+        console.log(chalk.gray('Use `tmc daemon stop` to stop the running daemon.\n'));
+        process.exit(1);
+      }
+      
+      console.log(chalk.cyan('\n🦀 Starting TMC daemon in background...\n'));
+      
+      // Build args for child process (remove --detach)
+      const args = ['daemon', 'run'];
+      if (options.verbose) args.push('--verbose');
+      if (options.url !== 'ws://127.0.0.1:18789') args.push('--url', options.url);
+      
+      const tmcPath = getTmcBinaryPath();
+      const child = spawn(process.execPath, [tmcPath, ...args], {
+        detached: true,
+        stdio: 'ignore',
+        env: { ...process.env, TMC_DAEMON_CHILD: '1' },
+      });
+      
+      child.unref();
+      
+      if (child.pid) {
+        writePidFile(child.pid);
+        console.log(chalk.green(`✓ Daemon started in background (PID: ${child.pid})`));
+        console.log(chalk.gray(`\nPID file: ${PID_FILE_PATH}`));
+        console.log(chalk.gray('\nUseful commands:'));
+        console.log(chalk.white('  tmc daemon status') + chalk.gray(' - Check daemon status'));
+        console.log(chalk.white('  tmc daemon stop') + chalk.gray('   - Stop the daemon'));
+        console.log(chalk.white('  tmc daemon logs') + chalk.gray('   - View daemon logs (if using systemd)\n'));
+      } else {
+        console.log(chalk.red('✗ Failed to start daemon in background\n'));
+        process.exit(1);
+      }
+      
+      process.exit(0);
+    }
+    
+    // Normal foreground mode
     console.log(chalk.cyan(`
 ╔════════════════════════════════════════════════════════════╗
 ║                                                            ║
@@ -970,6 +1169,11 @@ program
 ║                                                            ║
 ╚════════════════════════════════════════════════════════════╝
 `));
+
+    // If running as daemon child, write PID file
+    if (process.env.TMC_DAEMON_CHILD === '1') {
+      writePidFile(process.pid);
+    }
 
     const config = new ConfigManager();
     
@@ -998,7 +1202,11 @@ program
       statusSpinner.succeed('Connected to OpenClaw Gateway');
       console.log(chalk.green('\n🦞 Daemon is now running!'));
       console.log(chalk.gray('  Listening for agent responses...'));
-      console.log(chalk.gray('  Press Ctrl+C to stop.\n'));
+      if (process.env.TMC_DAEMON_CHILD !== '1') {
+        console.log(chalk.gray('  Press Ctrl+C to stop.\n'));
+      } else {
+        console.log(chalk.gray('  Running in background mode.\n'));
+      }
 
       // Start periodic stats display
       statsInterval = setInterval(() => {
@@ -1073,6 +1281,7 @@ program
       console.log(chalk.cyan('━━━━━━━━━━━━━━━━━━━━━━━━\n'));
 
       await daemon.stop();
+      removePidFile();
       console.log(chalk.green('Daemon stopped. Goodbye! 👋\n'));
       process.exit(0);
     };
@@ -1096,7 +1305,335 @@ program
     } catch (error) {
       statusSpinner.fail('Failed to start daemon');
       console.error(chalk.red(`\nError: ${error instanceof Error ? error.message : 'Unknown error'}`));
+      removePidFile();
       process.exit(1);
+    }
+  });
+
+// tmc daemon stop
+daemonCommand
+  .command('stop')
+  .description('Stop the running daemon')
+  .action(() => {
+    console.log(chalk.cyan('\n🦀 Stopping TMC daemon...\n'));
+    
+    const status = getDaemonStatus();
+    
+    if (status.systemdActive) {
+      console.log(chalk.gray('Daemon is running as systemd service. Stopping via systemctl...\n'));
+      try {
+        execSync('sudo systemctl stop tmc-daemon', { stdio: 'inherit' });
+        console.log(chalk.green('✓ Daemon service stopped\n'));
+      } catch {
+        console.log(chalk.red('✗ Failed to stop daemon service.'));
+        console.log(chalk.gray('  Try running: sudo systemctl stop tmc-daemon\n'));
+      }
+      return;
+    }
+    
+    if (!status.running || !status.pid) {
+      console.log(chalk.yellow('⚠ Daemon is not running\n'));
+      removePidFile();
+      return;
+    }
+    
+    try {
+      process.kill(status.pid, 'SIGTERM');
+      console.log(chalk.green(`✓ Sent stop signal to daemon (PID: ${status.pid})`));
+      
+      // Wait a moment and check if it stopped
+      setTimeout(() => {
+        if (isProcessRunning(status.pid!)) {
+          console.log(chalk.yellow('  Daemon is still shutting down...'));
+        } else {
+          console.log(chalk.green('  Daemon stopped successfully\n'));
+          removePidFile();
+        }
+      }, 1000);
+    } catch (error) {
+      console.log(chalk.red(`✗ Failed to stop daemon: ${error instanceof Error ? error.message : 'Unknown error'}`));
+      removePidFile();
+    }
+  });
+
+// tmc daemon status
+daemonCommand
+  .command('status')
+  .description('Show daemon status')
+  .action(() => {
+    console.log(chalk.cyan('\n🦀 TMC Daemon Status\n'));
+    
+    const status = getDaemonStatus();
+    
+    console.log(chalk.yellow('━━━ Process Status ━━━\n'));
+    
+    if (status.running && status.pid) {
+      console.log(chalk.green(`  ✓ Daemon is running (PID: ${status.pid})`));
+    } else if (status.pid) {
+      console.log(chalk.red(`  ✗ Daemon is not running (stale PID file: ${status.pid})`));
+      console.log(chalk.gray('    Cleaning up stale PID file...'));
+      removePidFile();
+    } else {
+      console.log(chalk.gray('  ○ Daemon is not running'));
+    }
+    
+    console.log(chalk.yellow('\n━━━ Systemd Service ━━━\n'));
+    
+    if (status.systemdInstalled) {
+      console.log(chalk.green('  ✓ Service installed'));
+      if (status.systemdActive) {
+        console.log(chalk.green('  ✓ Service is active'));
+      } else {
+        console.log(chalk.yellow('  ○ Service is not active'));
+      }
+      
+      // Show more details from systemctl
+      try {
+        const serviceStatus = execSync('systemctl status tmc-daemon --no-pager 2>&1 | head -10', { encoding: 'utf8' });
+        console.log(chalk.gray('\n  Service details:'));
+        serviceStatus.split('\n').forEach(line => {
+          console.log(chalk.gray(`    ${line}`));
+        });
+      } catch {
+        // Ignore
+      }
+    } else {
+      console.log(chalk.gray('  ○ Service not installed'));
+      console.log(chalk.gray('    Run `tmc daemon install` to install as systemd service'));
+    }
+    
+    console.log(chalk.yellow('\n━━━ Quick Actions ━━━\n'));
+    
+    if (status.running || status.systemdActive) {
+      console.log(chalk.white('  tmc daemon stop') + chalk.gray('    - Stop the daemon'));
+    } else {
+      console.log(chalk.white('  tmc daemon run') + chalk.gray('     - Start in foreground'));
+      console.log(chalk.white('  tmc daemon run -d') + chalk.gray(' - Start in background'));
+    }
+    
+    if (status.systemdInstalled) {
+      console.log(chalk.white('  tmc daemon logs') + chalk.gray('    - View logs'));
+      console.log(chalk.white('  tmc daemon uninstall') + chalk.gray(' - Remove systemd service'));
+    } else {
+      console.log(chalk.white('  tmc daemon install') + chalk.gray(' - Install as systemd service'));
+    }
+    
+    console.log();
+  });
+
+// tmc daemon install
+daemonCommand
+  .command('install')
+  .description('Install daemon as systemd service (requires sudo)')
+  .action(async () => {
+    console.log(chalk.cyan('\n🦀 Installing TMC daemon as systemd service...\n'));
+    
+    // Check if already installed
+    if (fs.existsSync(SYSTEMD_SERVICE_PATH)) {
+      console.log(chalk.yellow('⚠ Systemd service already installed.'));
+      
+      const { reinstall } = await inquirer.prompt([{
+        type: 'confirm',
+        name: 'reinstall',
+        message: 'Would you like to reinstall/update the service?',
+        default: false,
+      }]);
+      
+      if (!reinstall) {
+        console.log(chalk.gray('\nInstallation cancelled.\n'));
+        return;
+      }
+    }
+    
+    // Check if running as root (needed for systemd)
+    if (process.getuid && process.getuid() !== 0) {
+      console.log(chalk.yellow('⚠ This command requires sudo privileges.\n'));
+      console.log(chalk.gray('The following commands will be run with sudo:'));
+      console.log(chalk.gray('  1. Write service file to /etc/systemd/system/'));
+      console.log(chalk.gray('  2. Reload systemd daemon'));
+      console.log(chalk.gray('  3. Enable and start the service\n'));
+      
+      const { proceed } = await inquirer.prompt([{
+        type: 'confirm',
+        name: 'proceed',
+        message: 'Continue with installation?',
+        default: true,
+      }]);
+      
+      if (!proceed) {
+        console.log(chalk.yellow('\nInstallation cancelled.\n'));
+        return;
+      }
+    }
+    
+    // Generate service file
+    const serviceContent = generateSystemdService();
+    
+    // Write to temp file first
+    const tempPath = path.join(os.tmpdir(), 'tmc-daemon.service');
+    fs.writeFileSync(tempPath, serviceContent, 'utf8');
+    
+    console.log(chalk.gray('Generated service file:\n'));
+    console.log(chalk.gray('─'.repeat(50)));
+    serviceContent.split('\n').forEach(line => {
+      console.log(chalk.gray(`  ${line}`));
+    });
+    console.log(chalk.gray('─'.repeat(50)));
+    console.log();
+    
+    try {
+      // Install service file
+      const installSpinner = ora('Installing service file...').start();
+      execSync(`sudo cp ${tempPath} ${SYSTEMD_SERVICE_PATH}`, { stdio: 'pipe' });
+      execSync(`sudo chmod 644 ${SYSTEMD_SERVICE_PATH}`, { stdio: 'pipe' });
+      installSpinner.succeed('Service file installed');
+      
+      // Reload systemd
+      const reloadSpinner = ora('Reloading systemd...').start();
+      execSync('sudo systemctl daemon-reload', { stdio: 'pipe' });
+      reloadSpinner.succeed('Systemd reloaded');
+      
+      // Enable service
+      const enableSpinner = ora('Enabling service...').start();
+      execSync('sudo systemctl enable tmc-daemon', { stdio: 'pipe' });
+      enableSpinner.succeed('Service enabled (will start on boot)');
+      
+      // Ask to start now
+      const { startNow } = await inquirer.prompt([{
+        type: 'confirm',
+        name: 'startNow',
+        message: 'Start the daemon service now?',
+        default: true,
+      }]);
+      
+      if (startNow) {
+        const startSpinner = ora('Starting service...').start();
+        execSync('sudo systemctl start tmc-daemon', { stdio: 'pipe' });
+        startSpinner.succeed('Service started');
+      }
+      
+      console.log(chalk.green('\n✓ TMC daemon installed as systemd service!\n'));
+      console.log(chalk.gray('Useful commands:'));
+      console.log(chalk.white('  tmc daemon status') + chalk.gray('      - Check daemon status'));
+      console.log(chalk.white('  tmc daemon logs') + chalk.gray('        - View daemon logs'));
+      console.log(chalk.white('  sudo systemctl restart tmc-daemon') + chalk.gray(' - Restart daemon'));
+      console.log(chalk.white('  tmc daemon uninstall') + chalk.gray('   - Remove systemd service\n'));
+      
+    } catch (error) {
+      console.log(chalk.red(`\n✗ Installation failed: ${error instanceof Error ? error.message : 'Unknown error'}`));
+      console.log(chalk.gray('\nYou may need to run with sudo or check permissions.\n'));
+      process.exit(1);
+    } finally {
+      // Clean up temp file
+      try {
+        fs.unlinkSync(tempPath);
+      } catch {
+        // Ignore
+      }
+    }
+  });
+
+// tmc daemon uninstall
+daemonCommand
+  .command('uninstall')
+  .description('Uninstall daemon systemd service (requires sudo)')
+  .action(async () => {
+    console.log(chalk.cyan('\n🦀 Uninstalling TMC daemon systemd service...\n'));
+    
+    if (!fs.existsSync(SYSTEMD_SERVICE_PATH)) {
+      console.log(chalk.yellow('⚠ Systemd service is not installed.\n'));
+      return;
+    }
+    
+    const { confirm } = await inquirer.prompt([{
+      type: 'confirm',
+      name: 'confirm',
+      message: 'Are you sure you want to remove the TMC daemon service?',
+      default: false,
+    }]);
+    
+    if (!confirm) {
+      console.log(chalk.yellow('\nUninstallation cancelled.\n'));
+      return;
+    }
+    
+    try {
+      // Stop service if running
+      const stopSpinner = ora('Stopping service...').start();
+      try {
+        execSync('sudo systemctl stop tmc-daemon 2>/dev/null', { stdio: 'pipe' });
+        stopSpinner.succeed('Service stopped');
+      } catch {
+        stopSpinner.info('Service was not running');
+      }
+      
+      // Disable service
+      const disableSpinner = ora('Disabling service...').start();
+      try {
+        execSync('sudo systemctl disable tmc-daemon 2>/dev/null', { stdio: 'pipe' });
+        disableSpinner.succeed('Service disabled');
+      } catch {
+        disableSpinner.info('Service was not enabled');
+      }
+      
+      // Remove service file
+      const removeSpinner = ora('Removing service file...').start();
+      execSync(`sudo rm -f ${SYSTEMD_SERVICE_PATH}`, { stdio: 'pipe' });
+      removeSpinner.succeed('Service file removed');
+      
+      // Reload systemd
+      const reloadSpinner = ora('Reloading systemd...').start();
+      execSync('sudo systemctl daemon-reload', { stdio: 'pipe' });
+      reloadSpinner.succeed('Systemd reloaded');
+      
+      console.log(chalk.green('\n✓ TMC daemon service uninstalled successfully!\n'));
+      console.log(chalk.gray('You can still run the daemon manually with:'));
+      console.log(chalk.white('  tmc daemon run') + chalk.gray('     - Run in foreground'));
+      console.log(chalk.white('  tmc daemon run -d') + chalk.gray(' - Run in background\n'));
+      
+    } catch (error) {
+      console.log(chalk.red(`\n✗ Uninstallation failed: ${error instanceof Error ? error.message : 'Unknown error'}`));
+      console.log(chalk.gray('\nYou may need to run with sudo or check permissions.\n'));
+      process.exit(1);
+    }
+  });
+
+// tmc daemon logs
+daemonCommand
+  .command('logs')
+  .description('View daemon logs (systemd journalctl)')
+  .option('-f, --follow', 'Follow log output')
+  .option('-n, --lines <number>', 'Number of lines to show', '50')
+  .action((options) => {
+    const status = getDaemonStatus();
+    
+    if (!status.systemdInstalled) {
+      console.log(chalk.yellow('\n⚠ Systemd service is not installed.'));
+      console.log(chalk.gray('Logs are only available when running as systemd service.'));
+      console.log(chalk.gray('\nRun `tmc daemon install` to install as systemd service.\n'));
+      return;
+    }
+    
+    const args = ['journalctl', '-u', 'tmc-daemon', '--no-pager'];
+    if (options.follow) {
+      args.push('-f');
+    } else {
+      args.push('-n', options.lines);
+    }
+    
+    console.log(chalk.cyan(`\n🦀 TMC Daemon Logs (last ${options.lines} lines)\n`));
+    console.log(chalk.gray('─'.repeat(60)));
+    
+    try {
+      const child = spawn(args[0], args.slice(1), {
+        stdio: 'inherit',
+      });
+      
+      child.on('error', (error) => {
+        console.log(chalk.red(`\n✗ Failed to read logs: ${error.message}\n`));
+      });
+    } catch (error) {
+      console.log(chalk.red(`\n✗ Failed to read logs: ${error instanceof Error ? error.message : 'Unknown error'}\n`));
     }
   });
 

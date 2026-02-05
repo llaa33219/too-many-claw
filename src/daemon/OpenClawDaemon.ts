@@ -5,7 +5,7 @@
 
 import { EventEmitter } from 'events';
 import { execSync } from 'child_process';
-import { GatewayClient, ConnectionState, AgentResponseMessage, GatewayMessage, ChannelMessage } from '../openclaw/GatewayClient.js';
+import { GatewayClient, ConnectionState, AgentResponseMessage, GatewayMessage, ChannelMessage, extractTextContent } from '../openclaw/GatewayClient.js';
 import { WebhookManager } from '../discord/WebhookManager.js';
 import { ConfigManager } from '../config/ConfigManager.js';
 import { AgentMapper } from './AgentMapper.js';
@@ -307,7 +307,16 @@ export class OpenClawDaemon extends EventEmitter {
     this.lastMessageAt = new Date();
     
     if (this.config.verbose) {
-      this.log(`Raw message: ${JSON.stringify(message).substring(0, 200)}...`);
+      this.log(`Raw message: ${JSON.stringify(message).substring(0, 500)}...`);
+      // Log message structure for debugging
+      const keys = Object.keys(message);
+      this.log(`  Keys: ${keys.join(', ')}`);
+      if ((message as any).role) {
+        this.log(`  Role: ${(message as any).role}`);
+      }
+      if ((message as any).stream) {
+        this.log(`  Stream: ${(message as any).stream}`);
+      }
     }
   }
 
@@ -315,19 +324,28 @@ export class OpenClawDaemon extends EventEmitter {
    * Handle agent response (complete response)
    */
   private async handleAgentResponse(message: AgentResponseMessage): Promise<void> {
-    const agentIdentifier = message.agentId || message.agentName || (message as any).agent;
-    const content = message.content || (message as any).text || (message as any).message;
+    const agentIdentifier = message.agentId || message.agentName || (message as any).agent || (message as any).name;
     
-    if (!content) {
+    // Extract content - handle both string and array formats
+    let content = '';
+    if (typeof message.content === 'string') {
+      content = message.content;
+    } else if (Array.isArray(message.content)) {
+      content = extractTextContent(message.content);
+    } else {
+      // Try other possible content fields
+      content = (message as any).text || (message as any).message || '';
+    }
+    
+    if (!content || content.trim() === '') {
+      this.log(`Empty content for agent response from: ${agentIdentifier}`);
       return;
     }
 
-    const agent = this.agentMapper.resolve(agentIdentifier);
-    if (!agent) {
-      this.log(`Unknown agent: ${agentIdentifier}`);
-      return;
-    }
-
+    // Resolve agent or use default
+    const agent = this.agentMapper.resolve(agentIdentifier) || this.agentMapper.getDefaultAgent();
+    
+    this.log(`Agent response from ${agent.name}: ${content.substring(0, 100)}...`);
     this.emit('message_received', agent.id, content);
     await this.forwardToWebhook(agent, content);
   }
@@ -336,12 +354,32 @@ export class OpenClawDaemon extends EventEmitter {
    * Handle streaming delta (partial response)
    */
   private handleAgentDelta(message: AgentResponseMessage): void {
-    const agentIdentifier = message.agentId || message.agentName || (message as any).agent;
-    const delta = message.delta || message.content || (message as any).text;
-    const messageId = message.id || agentIdentifier || 'default';
+    const agentIdentifier = message.agentId || message.agentName || (message as any).agent || 'assistant';
+    
+    // Extract delta content
+    let delta = '';
+    if (typeof message.delta === 'string') {
+      delta = message.delta;
+    } else if (typeof message.content === 'string') {
+      delta = message.content;
+    } else if ((message as any).data?.text) {
+      delta = (message as any).data.text;
+    } else if ((message as any).data?.thinking) {
+      // Thinking deltas - include them as they may be useful
+      delta = (message as any).data.thinking;
+    } else if ((message as any).text) {
+      delta = (message as any).text;
+    }
+    
+    const messageId = message.id || (message as any).runId || agentIdentifier || 'default';
     
     if (!delta) {
       return;
+    }
+
+    // Log delta in verbose mode
+    if (this.config.verbose) {
+      this.log(`Delta [${messageId}]: ${delta.substring(0, 50)}...`);
     }
 
     // Accumulate delta in buffer
@@ -377,14 +415,17 @@ export class OpenClawDaemon extends EventEmitter {
    * Handle agent end event (flush buffer and send)
    */
   private async handleAgentEnd(message: AgentResponseMessage): Promise<void> {
-    const messageId = message.id || message.agentId || message.agentName || 'default';
-    const agentIdentifier = message.agentId || message.agentName || (message as any).agent;
+    const messageId = message.id || (message as any).runId || message.agentId || message.agentName || 'default';
+    const agentIdentifier = message.agentId || message.agentName || (message as any).agent || 'assistant';
+    
+    this.log(`Agent end event [${messageId}] from: ${agentIdentifier}`);
     
     // Check if there's buffered content to send
     const buffered = this.responseBuffers.get(messageId);
-    if (buffered && buffered.content) {
+    if (buffered && buffered.content && buffered.content.trim()) {
       const agent = this.agentMapper.resolve(buffered.agentId) || this.agentMapper.getDefaultAgent();
       
+      this.log(`Flushing buffer for ${agent.name}: ${buffered.content.length} chars`);
       this.emit('message_received', agent.id, buffered.content);
       await this.forwardToWebhook(agent, buffered.content);
       
@@ -392,13 +433,20 @@ export class OpenClawDaemon extends EventEmitter {
     }
     
     // Also handle any content in the end message itself
-    const content = message.content || (message as any).text;
-    if (content) {
-      const agent = this.agentMapper.resolve(agentIdentifier);
-      if (agent) {
-        this.emit('message_received', agent.id, content);
-        await this.forwardToWebhook(agent, content);
-      }
+    let content = '';
+    if (typeof message.content === 'string') {
+      content = message.content;
+    } else if (Array.isArray(message.content)) {
+      content = extractTextContent(message.content);
+    } else if ((message as any).text) {
+      content = (message as any).text;
+    }
+    
+    if (content && content.trim()) {
+      const agent = this.agentMapper.resolve(agentIdentifier) || this.agentMapper.getDefaultAgent();
+      this.log(`End message content for ${agent.name}: ${content.length} chars`);
+      this.emit('message_received', agent.id, content);
+      await this.forwardToWebhook(agent, content);
     }
     
     // Mark agent as exited if appropriate

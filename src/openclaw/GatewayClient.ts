@@ -52,6 +52,11 @@ export enum GatewayMessageType {
   STATUS = 'status',
   HEALTH = 'health',
   ERROR = 'error',
+  
+  // OpenClaw-specific stream types
+  STREAM_THINKING = 'thinking',
+  STREAM_TEXT = 'text',
+  STREAM_TOOL = 'tool',
 }
 
 /** Base gateway message structure */
@@ -67,11 +72,30 @@ export interface AgentResponseMessage extends GatewayMessage {
   type: 'agent_response' | 'agent_delta' | 'agent_end';
   agentId?: string;
   agentName?: string;
-  content?: string;
+  content?: string | OpenClawContentPart[];
   delta?: string;
   channel?: string;
   guild?: string;
   complete?: boolean;
+  // OpenClaw-specific fields
+  role?: 'assistant' | 'user' | 'system';
+  stream?: string;
+  data?: {
+    thinking?: string;
+    text?: string;
+    [key: string]: unknown;
+  };
+  runId?: string;
+}
+
+/** OpenClaw content part (in content array) */
+export interface OpenClawContentPart {
+  type: 'text' | 'thinking' | 'tool_use' | 'tool_result';
+  text?: string;
+  thinking?: string;
+  id?: string;
+  name?: string;
+  input?: unknown;
 }
 
 /** Channel message from Discord/other platforms */
@@ -130,6 +154,32 @@ const DEFAULT_CONFIG: Required<GatewayClientConfig> = {
   heartbeatInterval: 30000,
   connectionTimeout: 10000,
 };
+
+/**
+ * Extract text content from OpenClaw content array or string
+ */
+export function extractTextContent(content: string | OpenClawContentPart[] | undefined): string {
+  if (!content) {
+    return '';
+  }
+  
+  if (typeof content === 'string') {
+    return content;
+  }
+  
+  // Content is an array of parts
+  const textParts: string[] = [];
+  for (const part of content) {
+    if (part.type === 'text' && part.text) {
+      textParts.push(part.text);
+    } else if (part.type === 'thinking' && part.thinking) {
+      // Optionally include thinking content
+      textParts.push(part.thinking);
+    }
+  }
+  
+  return textParts.join('');
+}
 
 /**
  * WebSocket client for connecting to OpenClaw Gateway
@@ -312,7 +362,20 @@ export class GatewayClient extends EventEmitter {
     // Emit generic message event
     this.emit('message', message);
 
-    // Handle specific message types
+    // First, check for OpenClaw role-based messages (no 'type' field)
+    const roleBasedMessage = message as AgentResponseMessage;
+    if (roleBasedMessage.role) {
+      this.handleRoleBasedMessage(roleBasedMessage);
+      return;
+    }
+
+    // Check for OpenClaw streaming messages (have 'stream' field)
+    if (roleBasedMessage.stream) {
+      this.handleStreamMessage(roleBasedMessage);
+      return;
+    }
+
+    // Handle type-based message types (original format)
     switch (message.type) {
       case GatewayMessageType.SHUTDOWN:
         this.emit('shutdown');
@@ -356,6 +419,107 @@ export class GatewayClient extends EventEmitter {
 
       default:
         // Unknown message type, already emitted via generic 'message' event
+        break;
+    }
+  }
+
+  /**
+   * Handle OpenClaw role-based messages (assistant, user, system)
+   */
+  private handleRoleBasedMessage(message: AgentResponseMessage): void {
+    const { role, content } = message;
+
+    // Extract text content from array or string
+    const textContent = extractTextContent(content);
+
+    switch (role) {
+      case 'assistant':
+        // Transform to agent_response format
+        const agentResponse: AgentResponseMessage = {
+          ...message,
+          type: 'agent_response',
+          content: textContent,
+          // Try to extract agent info from message
+          agentId: (message as any).agentId || (message as any).agent || 'assistant',
+          agentName: (message as any).agentName || (message as any).name || 'Assistant',
+        };
+        this.emit('agent_response', agentResponse);
+        break;
+
+      case 'user':
+        // User message from Discord or other channel
+        const channelMessage: ChannelMessage = {
+          type: 'channel_message',
+          content: textContent,
+          author: {
+            id: (message as any).userId || (message as any).authorId,
+            name: (message as any).userName || (message as any).authorName || 'User',
+            bot: false,
+          },
+        };
+        this.emit('channel_message', channelMessage);
+        break;
+
+      case 'system':
+        // System messages, ignore or log
+        break;
+    }
+  }
+
+  /**
+   * Handle OpenClaw streaming messages (thinking, text, tool)
+   */
+  private handleStreamMessage(message: AgentResponseMessage): void {
+    const { stream, data, runId } = message;
+
+    switch (stream) {
+      case 'thinking':
+        // Streaming thinking/reasoning content
+        const thinkingDelta: AgentResponseMessage = {
+          type: 'agent_delta',
+          id: runId,
+          delta: data?.thinking || '',
+          agentId: (message as any).agentId || 'assistant',
+        };
+        this.emit('agent_delta', thinkingDelta);
+        break;
+
+      case 'text':
+        // Streaming text content
+        const textDelta: AgentResponseMessage = {
+          type: 'agent_delta',
+          id: runId,
+          delta: data?.text || (typeof data === 'string' ? data : ''),
+          agentId: (message as any).agentId || 'assistant',
+        };
+        this.emit('agent_delta', textDelta);
+        break;
+
+      case 'tool':
+        // Tool usage events, could emit as agent_delta or special event
+        break;
+
+      case 'end':
+      case 'complete':
+      case 'done':
+        // Stream ended
+        const endMessage: AgentResponseMessage = {
+          type: 'agent_end',
+          id: runId,
+          complete: true,
+          agentId: (message as any).agentId || 'assistant',
+        };
+        this.emit('agent_end', endMessage);
+        break;
+
+      case 'start':
+      case 'begin':
+        // Stream started
+        this.emit('agent_start', message);
+        break;
+
+      default:
+        // Unknown stream type, already emitted via generic 'message' event
         break;
     }
   }
