@@ -1,6 +1,6 @@
 # 🦞 Too Many Claw
 
-> OpenClaw Extension - 35 AI agents collaborating dynamically
+> OpenClaw Extension - 35 AI agents collaborating dynamically via Discord webhooks
 
 [![npm version](https://badge.fury.io/js/too-many-claw.svg)](https://www.npmjs.com/package/too-many-claw)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
@@ -9,7 +9,9 @@
 
 - **35 Specialized Agents** - Development, design, testing, security, psychology counseling, and more
 - **Dynamic Collaboration** - Agents are summoned and dismissed as needed
-- **Discord Integration** - Real-time chat for natural collaboration
+- **Discord Integration** - Real-time chat for natural collaboration via webhooks
+- **OpenClaw Bridge** - Auto-forwards agent responses from OpenClaw Gateway to Discord
+- **Daemon Mode** - Background service with systemd integration for auto-start
 - **Groupthink Prevention** - Critic/verification agents ensure balanced decision-making
 
 ## 📦 Installation
@@ -49,6 +51,128 @@ tmc status
 ```bash
 tmc agents
 ```
+
+---
+
+## 🦞 OpenClaw Bridge (Daemon Mode)
+
+Too Many Claw includes a **daemon mode** that automatically bridges OpenClaw agent responses to Discord via webhooks. When OpenClaw generates an AI response, TMC daemon intercepts it and sends it through the appropriate agent's webhook, giving each agent a unique identity in Discord.
+
+### How It Works
+
+```
+┌─────────────┐     WebSocket      ┌───────────────┐    Webhook     ┌─────────┐
+│  OpenClaw   │ ──────────────────▶│  TMC Daemon   │ ──────────────▶│ Discord │
+│  Gateway    │   ws://127.0.0.1   │               │                │         │
+│             │      :18789        │  Agent Router │                │ #chat   │
+└─────────────┘                    └───────────────┘                └─────────┘
+```
+
+1. **OpenClaw Gateway** runs and handles AI agent conversations
+2. **TMC Daemon** connects to the gateway via WebSocket
+3. When an agent responds, TMC routes it through the correct webhook
+4. **Discord** shows the message with the agent's unique name and emoji
+
+### Starting the Daemon
+
+```bash
+# Run in foreground (see all logs)
+tmc daemon run
+
+# Run with verbose logging (debug mode)
+tmc daemon run --verbose
+
+# Run in background (detached)
+tmc daemon run --detach
+```
+
+### Daemon Management
+
+```bash
+# Check daemon status
+tmc daemon status
+
+# Stop running daemon
+tmc daemon stop
+
+# View daemon logs (systemd only)
+tmc daemon logs
+tmc daemon logs --follow    # Live tail
+tmc daemon logs --lines 100 # Last 100 lines
+```
+
+### Systemd Service (Auto-Start on Boot)
+
+For production use, install TMC as a systemd service that starts automatically on boot:
+
+```bash
+# Install as systemd service (requires sudo)
+tmc daemon install
+
+# Uninstall systemd service
+tmc daemon uninstall
+```
+
+After installation, the daemon will:
+- Start automatically when your system boots
+- Restart automatically if it crashes
+- Run in the background with proper logging
+
+**Useful systemctl commands:**
+```bash
+sudo systemctl status tmc-daemon   # Check status
+sudo systemctl restart tmc-daemon  # Restart service
+sudo systemctl stop tmc-daemon     # Stop service
+journalctl -u tmc-daemon -f        # View logs
+```
+
+---
+
+## 🔧 Troubleshooting
+
+### Debug Command
+
+If you're having issues with OpenClaw configuration detection:
+
+```bash
+# Show detailed debug information
+tmc debug
+
+# Show raw config (WARNING: may expose sensitive data)
+tmc debug --raw
+```
+
+This shows:
+- OpenClaw config file location and structure
+- Detected Discord settings (token, guild ID, channel IDs)
+- Current TMC configuration status
+- What can be imported from OpenClaw
+
+### Repair Command
+
+If your configuration is corrupted or needs fixing:
+
+```bash
+# Check configuration health (dry run)
+tmc repair --check
+
+# Auto-repair issues
+tmc repair
+
+# Force repair without confirmation
+tmc repair --force
+
+# Restore from backup
+tmc repair --restore
+```
+
+Repair can fix:
+- Corrupted JSON configuration files
+- Invalid webhook URLs
+- Missing Discord settings (imports from OpenClaw if available)
+- Automatic backup before any changes
+
+---
 
 ## 👥 Agent Directory
 
@@ -119,6 +243,8 @@ tmc agents
 | `threatener` | Pressure Specialist | Sonnet | Deadline pressure |
 | `dirty-worker` | Dirty Worker | Haiku | Undesirable tasks |
 
+---
+
 ## 💬 Communication
 
 ### Summoning Agents
@@ -139,6 +265,8 @@ Normal: "🔬 Tech Researcher Here are my findings. ..."
 Exit: "🔬 Tech Researcher Investigation complete. (exiting)"
 ```
 
+---
+
 ## 📁 Discord Channel Structure
 
 ```
@@ -146,6 +274,8 @@ Exit: "🔬 Tech Researcher Investigation complete. (exiting)"
 #status    - Automatic agent entry/exit logs
 Threads    - For complex task separation
 ```
+
+---
 
 ## ⚙️ Configuration
 
@@ -158,9 +288,52 @@ DISCORD_STATUS_CHANNEL_ID=status_channel_id
 ```
 
 ### Configuration Files
-- `~/.openclaw/too-many-claw.json` - Discord settings and webhook URLs
-- `~/.openclaw/openclaw.json` - Agent definitions (auto-merged)
-- `~/.openclaw/workspace-{id}/SOUL.md` - Agent personas
+| File | Description |
+|------|-------------|
+| `~/.openclaw/too-many-claw.json` | Discord settings and webhook URLs |
+| `~/.openclaw/openclaw.json` | OpenClaw agent definitions (auto-merged) |
+| `~/.openclaw/workspace-{id}/SOUL.md` | Agent personas |
+| `~/.openclaw/tmc-daemon.pid` | Daemon PID file (when running in background) |
+
+### OpenClaw Integration
+
+TMC automatically detects and imports settings from OpenClaw's configuration:
+
+```bash
+# Check what can be imported from OpenClaw
+tmc debug
+
+# Import during setup
+tmc setup
+# → "OpenClaw Discord configuration detected! Import?"
+```
+
+---
+
+## 📋 CLI Reference
+
+| Command | Description |
+|---------|-------------|
+| `tmc setup` | Interactive setup wizard |
+| `tmc start` | Start Discord bot |
+| `tmc simulate` | Terminal simulation mode |
+| `tmc status` | Show agent and config status |
+| `tmc agents` | List all available agents |
+| `tmc daemon run` | Run OpenClaw bridge daemon |
+| `tmc daemon run -d` | Run daemon in background |
+| `tmc daemon run -v` | Run with verbose logging |
+| `tmc daemon stop` | Stop running daemon |
+| `tmc daemon status` | Check daemon status |
+| `tmc daemon install` | Install systemd service |
+| `tmc daemon uninstall` | Remove systemd service |
+| `tmc daemon logs` | View systemd logs |
+| `tmc repair` | Repair configuration |
+| `tmc repair --check` | Check without fixing |
+| `tmc repair --restore` | Restore from backup |
+| `tmc debug` | Debug OpenClaw detection |
+| `tmc uninstall` | Remove TMC configuration |
+
+---
 
 ## 🔧 Development
 
@@ -174,6 +347,8 @@ npm run dev
 # Build
 npm run build
 ```
+
+---
 
 ## 🚀 Deployment (npm publish)
 
@@ -215,6 +390,8 @@ git push --tags
 npm run build
 npm publish --access public
 ```
+
+---
 
 ## 📄 License
 
