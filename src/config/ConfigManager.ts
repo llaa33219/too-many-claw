@@ -50,6 +50,18 @@ export interface OpenClawGatewayConfig {
 }
 
 /**
+ * OpenClaw guild configuration within channels.discord.guilds
+ */
+export interface OpenClawGuildConfig {
+  channels?: Record<string, {
+    requireMention?: boolean;
+    activation?: string;
+  } | boolean>;
+  requireMention?: boolean;
+  users?: string[];
+}
+
+/**
  * OpenClaw channels configuration
  * Discord settings may be stored under channels.discord
  */
@@ -59,6 +71,10 @@ export interface OpenClawChannelsConfig {
     channel?: string;
     /** Array of channels in format "guildId/channelId" */
     channels?: string[];
+    /** Guilds configuration - keys are guild IDs */
+    guilds?: Record<string, OpenClawGuildConfig>;
+    /** Group policy (allowlist, open, etc.) */
+    groupPolicy?: string;
   };
 }
 
@@ -302,7 +318,11 @@ export class ConfigManager {
 
     // Get Discord config from all possible locations
     const discord = this.getOpenClawDiscordConfig();
-    const channelsDiscord = config?.channels?.discord as (OpenClawDiscordConfig & { channel?: string; channels?: string[] }) | undefined;
+    const channelsDiscord = config?.channels?.discord as (OpenClawDiscordConfig & { 
+      channel?: string; 
+      channels?: string[]; 
+      guilds?: Record<string, OpenClawGuildConfig>;
+    }) | undefined;
     
     if (!discord && !channelsDiscord) return null;
 
@@ -313,12 +333,55 @@ export class ConfigManager {
       settings.token = discord.token;
     }
 
+    // Extract from channels.discord.guilds structure (OpenClaw's primary format)
+    // Structure: { guilds: { "GUILD_ID": { channels: { "CHANNEL_ID": { ... } } } } }
+    if (channelsDiscord?.guilds) {
+      const guildIds = Object.keys(channelsDiscord.guilds);
+      if (guildIds.length > 0) {
+        // First guild ID becomes our guildId
+        const firstGuildId = guildIds[0];
+        if (!settings.guildId && /^\d{17,19}$/.test(firstGuildId)) {
+          settings.guildId = firstGuildId;
+        }
+        
+        // Get channels from the first guild
+        const guildConfig = channelsDiscord.guilds[firstGuildId];
+        if (guildConfig?.channels) {
+          const channelKeys = Object.keys(guildConfig.channels);
+          const channelIds: string[] = [];
+          
+          for (const channelKey of channelKeys) {
+            // Channel key could be a numeric ID or a slug name
+            // Only use numeric IDs (17-19 digits) as channel IDs
+            if (/^\d{17,19}$/.test(channelKey)) {
+              channelIds.push(channelKey);
+            }
+          }
+          
+          // First channel becomes chat channel
+          if (channelIds.length > 0 && !settings.chatChannelId) {
+            settings.chatChannelId = channelIds[0];
+          }
+          
+          // Second channel becomes status channel if available
+          if (channelIds.length > 1 && !settings.statusChannelId) {
+            settings.statusChannelId = channelIds[1];
+          }
+          
+          // Store all channel IDs
+          if (channelIds.length > 0) {
+            settings.allowedChannels = channelIds;
+          }
+        }
+      }
+    }
+
     // Extract guildId (may be stored as guildId, serverId, or in allowlist.guilds)
-    if (discord?.guildId) {
+    if (!settings.guildId && discord?.guildId) {
       settings.guildId = discord.guildId;
-    } else if (discord?.serverId) {
+    } else if (!settings.guildId && discord?.serverId) {
       settings.guildId = discord.serverId;
-    } else if (discord?.allowlist?.guilds && discord.allowlist.guilds.length > 0) {
+    } else if (!settings.guildId && discord?.allowlist?.guilds && discord.allowlist.guilds.length > 0) {
       settings.guildId = discord.allowlist.guilds[0];
     }
 

@@ -872,6 +872,21 @@ program
           }
         });
         
+        // Show guilds structure if present
+        const guilds = (rawConfig as any)?.channels?.discord?.guilds;
+        if (guilds && typeof guilds === 'object') {
+          console.log(chalk.white('\nGuilds found in channels.discord.guilds:'));
+          const guildIds = Object.keys(guilds);
+          guildIds.forEach(guildId => {
+            const guildConfig = guilds[guildId];
+            const channelKeys = guildConfig?.channels ? Object.keys(guildConfig.channels) : [];
+            console.log(chalk.green(`  ✓ Guild: ${guildId}`));
+            if (channelKeys.length > 0) {
+              console.log(chalk.gray(`    Channels: ${channelKeys.join(', ')}`));
+            }
+          });
+        }
+        
         // Show raw config if requested (with warning)
         if (options.raw) {
           console.log(chalk.yellow('\n⚠ Raw OpenClaw config (may contain sensitive data):'));
