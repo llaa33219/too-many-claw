@@ -52,8 +52,11 @@ export class AgentMessageParser {
 
     while ((match = tagPattern.exec(content)) !== null) {
       // Untagged text before this tag → default agent
+      // Strip orphaned opening/closing tags that may result from split messages
       if (match.index > lastIndex) {
-        const before = content.slice(lastIndex, match.index).trim();
+        const before = content.slice(lastIndex, match.index)
+          .replace(/<\/?[a-z][a-z0-9-]*>/gi, '')
+          .trim();
         if (before) {
           sections.push({ agent: defaultAgent, content: before });
         }
@@ -74,8 +77,11 @@ export class AgentMessageParser {
     }
 
     // Untagged text after last tag → default agent
+    // Strip orphaned opening/closing tags that may result from split messages
     if (lastIndex < content.length) {
-      const after = content.slice(lastIndex).trim();
+      const after = content.slice(lastIndex)
+        .replace(/<\/?[a-z][a-z0-9-]*>/gi, '')
+        .trim();
       if (after) {
         sections.push({ agent: defaultAgent, content: after });
       }

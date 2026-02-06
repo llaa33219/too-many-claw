@@ -126,6 +126,13 @@ export class OpenClawDaemon extends EventEmitter {
   
   // Debug log directory creation flag
   private debugLogDirReady = false;
+  
+  // Relay message buffer for accumulating split bot messages before parsing
+  private relayBuffer: Map<string, { chunks: Array<{content: string; deleteFn: () => Promise<void>}>; timer: NodeJS.Timeout }> = new Map();
+  private readonly RELAY_BUFFER_DELAY = 400; // ms to wait for more chunks before processing
+  
+  // Sequential webhook send chain to guarantee message ordering
+  private sendChain: Promise<void> = Promise.resolve();
 
   constructor(config: DaemonConfig = {}) {
     super();
@@ -201,6 +208,14 @@ export class OpenClawDaemon extends EventEmitter {
     this.running = false;
     this.forceLog('Daemon stopping...');
     
+    // Flush pending relay buffers before shutting down
+    const pendingChannels = [...this.relayBuffer.keys()];
+    for (const channelId of pendingChannels) {
+      const buffer = this.relayBuffer.get(channelId);
+      if (buffer) clearTimeout(buffer.timer);
+      await this.processRelayBuffer(channelId);
+    }
+    
     this.stopProcessDetection();
     this.stopBufferCleanup();
     await this.gatewayClient.disconnect();
@@ -211,6 +226,7 @@ export class OpenClawDaemon extends EventEmitter {
     }
     
     this.webhookManager.destroy();
+    this.sendChain = Promise.resolve();
     
     this.emit('stop');
   }
@@ -418,40 +434,73 @@ export class OpenClawDaemon extends EventEmitter {
 
   /**
    * Set up relay handler on the Suppressor.
-   * When the Suppressor detects an OpenClaw bot message, this handler:
-   *   1. Checks if the content was already forwarded via webhook (Gateway path)
-   *   2. If not, resolves the agent and forwards via webhook (relay fallback)
-   *   3. Deletes the original bot message
+   * Buffers consecutive bot messages (which may be split by Discord's 2000-char limit)
+   * and processes them together after a short delay to avoid broken XML tags.
    */
   private setupRelayHandler(): void {
     if (!this.botMessageSuppressor) return;
 
-    this.botMessageSuppressor.on('bot_message_detected', async (detected: DetectedBotMessage) => {
-      // Strip agent tags before hashing so dedup matches the Gateway path (which stores stripped content)
-      const strippedContent = detected.content.replace(/<[a-z][a-z0-9-]*>([\s\S]*?)<\/[a-z][a-z0-9-]*>/gi, '$1').trim();
-      const contentHash = this.hashForDedup(strippedContent);
-      const now = Date.now();
+    this.botMessageSuppressor.on('bot_message_detected', (detected: DetectedBotMessage) => {
+      const channelId = detected.channelId;
+      const existing = this.relayBuffer.get(channelId);
 
-      const lastSentAt = this.recentContentHashes.get(contentHash);
-      if (lastSentAt && now - lastSentAt < this.DEDUP_TTL) {
-        this.log('Relay: content already forwarded via Gateway, just deleting bot message');
+      if (existing) {
+        // Add to existing buffer, reset timer
+        clearTimeout(existing.timer);
+        existing.chunks.push({ content: detected.content, deleteFn: detected.deleteMessage });
+        existing.timer = setTimeout(() => this.processRelayBuffer(channelId), this.RELAY_BUFFER_DELAY);
       } else {
-        // Resolve default agent from Gateway hint, then use parser for multi-agent splitting
-        const hint = this.agentHints.get(contentHash);
-        const hintedAgent = hint ? this.agentMapper.resolve(hint.agentId) : null;
-        const defaultAgent = hintedAgent || this.agentMapper.getDefaultAgent();
-
-        this.forceLog(`📨 Relay: forwarding bot message (default: ${defaultAgent.emoji} ${defaultAgent.name})`);
-        await this.parseAndForward(detected.content, defaultAgent);
+        // Start new buffer
+        const timer = setTimeout(() => this.processRelayBuffer(channelId), this.RELAY_BUFFER_DELAY);
+        this.relayBuffer.set(channelId, {
+          chunks: [{ content: detected.content, deleteFn: detected.deleteMessage }],
+          timer,
+        });
       }
+    });
+  }
 
-      // Delete the original bot message (suppression count tracked by 'suppressed' event)
+  /**
+   * Process accumulated relay buffer for a channel.
+   * Concatenates all chunks, parses tags from the full content, then forwards and deletes originals.
+   */
+  private async processRelayBuffer(channelId: string): Promise<void> {
+    const buffer = this.relayBuffer.get(channelId);
+    if (!buffer || buffer.chunks.length === 0) {
+      this.relayBuffer.delete(channelId);
+      return;
+    }
+
+    clearTimeout(buffer.timer);
+    const fullContent = buffer.chunks.map(c => c.content).join('\n');
+    const deleteFns = buffer.chunks.map(c => c.deleteFn);
+    this.relayBuffer.delete(channelId);
+
+    // Strip agent tags before hashing so dedup matches the Gateway path (which stores stripped content)
+    const strippedContent = fullContent.replace(/<[a-z][a-z0-9-]*>([\s\S]*?)<\/[a-z][a-z0-9-]*>/gi, '$1').trim();
+    const contentHash = this.hashForDedup(strippedContent);
+    const now = Date.now();
+
+    const lastSentAt = this.recentContentHashes.get(contentHash);
+    if (lastSentAt && now - lastSentAt < this.DEDUP_TTL) {
+      this.log('Relay: content already forwarded via Gateway, just deleting bot messages');
+    } else {
+      const hint = this.agentHints.get(contentHash);
+      const hintedAgent = hint ? this.agentMapper.resolve(hint.agentId) : null;
+      const defaultAgent = hintedAgent || this.agentMapper.getDefaultAgent();
+
+      this.forceLog(`📨 Relay: forwarding bot message (${buffer.chunks.length} chunk(s), default: ${defaultAgent.emoji} ${defaultAgent.name})`);
+      await this.parseAndForward(fullContent, defaultAgent);
+    }
+
+    // Delete all original bot messages
+    for (const deleteFn of deleteFns) {
       try {
-        await detected.deleteMessage();
+        await deleteFn();
       } catch (error) {
         this.log(`Relay: failed to delete bot message: ${error instanceof Error ? error.message : 'Unknown error'}`);
       }
-    });
+    }
   }
 
   /**
@@ -698,8 +747,18 @@ export class OpenClawDaemon extends EventEmitter {
         this.forceLog(`🔀 Agent: ${section.agent.emoji} ${section.agent.name}`);
       }
       this.agentHints.set(this.hashForDedup(section.content), { agentId: section.agent.id, timestamp: Date.now() });
-      await this.forwardToWebhook(section.agent, section.content);
+      await this.enqueueSend(section.agent, section.content);
     }
+  }
+
+  /**
+   * Enqueue a webhook send to guarantee sequential ordering.
+   * Each send waits for the previous one to complete before starting.
+   */
+  private enqueueSend(agent: AgentDefinition, content: string): Promise<void> {
+    const task = this.sendChain.then(() => this.forwardToWebhook(agent, content));
+    this.sendChain = task.catch(() => {}); // errors don't break the chain
+    return task;
   }
 
   /**
