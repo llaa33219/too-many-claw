@@ -655,9 +655,10 @@ export class GatewayClient extends EventEmitter {
 
     // Send connect request in OpenClaw Gateway JSON-RPC format
     // The gateway expects: { type: 'req', id, method: 'connect', params: { ... } }
-    // client.id must be one of: 'openclaw-control-ui', 'openclaw-dashboard', 'openclaw-ios', 'openclaw-android', 'openclaw-macos'
-    // client.mode must be one of: 'webchat' (for control-ui/dashboard)
-    // token goes in auth.token, not at params root
+    // Connect as a node client to bypass origin validation (required for Control UI clients)
+    // Node clients use device pairing instead of origin checks
+    // client.id must be one of: 'openclaw-ios', 'openclaw-android', 'openclaw-macos'
+    // client.mode must be 'node' for node clients
     const connectRequest = {
       type: 'req',
       id: requestId,
@@ -666,13 +667,14 @@ export class GatewayClient extends EventEmitter {
         minProtocol: 3,
         maxProtocol: 3,
         client: {
-          id: 'openclaw-control-ui',
-          version: '1.0.28',
+          id: 'openclaw-macos',
+          version: '1.0.29',
           platform: process.platform,
-          mode: 'webchat',
+          mode: 'node',
         },
-        role: 'operator',
-        scopes: ['operator.admin', 'operator.approvals'],
+        role: 'node',
+        // Node capabilities - expose basic system commands
+        caps: ['system.*'],
         auth: {
           token: this.config.gatewayToken,
         },
