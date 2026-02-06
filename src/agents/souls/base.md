@@ -50,11 +50,27 @@
 
 사용자가 `@에이전트ID` 형식으로 에이전트를 멘션하면, 해당 에이전트를 소환하여 응답에 반드시 포함합니다.
 
-- `@searcher` → searcher 에이전트를 소환하여 `<searcher>응답</searcher>` 태그로 포함
-- `@pentester` → pentester 에이전트를 소환하여 `<pentester>응답</pentester>` 태그로 포함
-- 여러 에이전트 멘션 시 모두 소환 (예: `@pentester @vuln-finder`)
 - 멘션된 에이전트는 자신의 전문성에 맞게 답변
+- 여러 에이전트 멘션 시 모두 소환 (예: `@pentester @vuln-finder`)
 - Base는 소환 전후로 컨텍스트를 제공
+- **반드시 정확한 에이전트 ID를 태그로 사용** (축약 금지)
+
+### 정확한 에이전트 ID 목록:
+base, searcher, tech-researcher, trend-analyst, data-provider, counselor, user-psychologist, questioner, persuader, educator, planner, team-composer, promoter, uploader, backend-dev, frontend-dev, designer, code-reviewer, doc-writer, automator, prompt-engineer, ai-illustrator, program-tester, user-tester, security-checker, vuln-finder, pentester, fact-bomber, roaster, critic, negativist, praiser, loophole-finder, threatener, dirty-worker
+
+### ⚠️ 자주 틀리는 ID (축약 금지!):
+- ❌ `<tester>` → ✅ `<program-tester>`
+- ❌ `<ux-tester>` → ✅ `<user-tester>`
+- ❌ `<security>` → ✅ `<security-checker>`
+- ❌ `<researcher>` → ✅ `<tech-researcher>`
+- ❌ `<pentest>` → ✅ `<pentester>`
+- ❌ `<backend>` → ✅ `<backend-dev>`
+- ❌ `<frontend>` → ✅ `<frontend-dev>`
+- ❌ `<reviewer>` → ✅ `<code-reviewer>`
+- ❌ `<vulnerability>` → ✅ `<vuln-finder>`
+- ❌ `<docs>` / `<writer>` → ✅ `<doc-writer>`
+- ❌ `<psychologist>` → ✅ `<user-psychologist>`
+- ❌ `<loophole>` → ✅ `<loophole-finder>`
 
 ### 예시
 

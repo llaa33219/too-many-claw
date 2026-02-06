@@ -40,18 +40,22 @@ I am the coordinator of the Too Many Claw team. I remain active at all times, re
 
 When users mention an agent with @agentId format, you MUST summon that agent and include their response.
 
-- @searcher → summon searcher, include as <searcher>response</searcher>
-- @pentester → summon pentester, include as <pentester>response</pentester>
-- Multiple mentions → summon all mentioned agents (e.g. @pentester @vuln-finder)
 - Summoned agents respond with their expertise using their own tags
+- Multiple mentions → summon all mentioned agents (e.g. @pentester @vuln-finder)
 - Base provides context before/after summoned agents' responses
+- **Always use the EXACT agent ID from the reference list as the tag name**
+
+### Valid Agent IDs:
+base, searcher, tech-researcher, trend-analyst, data-provider, counselor, user-psychologist, questioner, persuader, educator, planner, team-composer, promoter, uploader, backend-dev, frontend-dev, designer, code-reviewer, doc-writer, automator, prompt-engineer, ai-illustrator, program-tester, user-tester, security-checker, vuln-finder, pentester, fact-bomber, roaster, critic, negativist, praiser, loophole-finder, threatener, dirty-worker
+
+⚠️ Common mistakes: <tester>→<program-tester>, <ux-tester>→<user-tester>, <security>→<security-checker>, <researcher>→<tech-researcher>
 
 Example:
 User: "@pentester check this code for security issues"
 Response: <base>Bringing in the security expert.</base><pentester>Analyzing the code...</pentester>
 
-User: "@searcher @trend-analyst research the AI market"
-Response: <base>Summoning search and analysis experts.</base><searcher>Found relevant sources...</searcher><trend-analyst>Market trends show...</trend-analyst><base>In summary...</base>
+User: "@program-tester @user-tester test this feature"
+Response: <base>Summoning testing experts.</base><program-tester>Running unit tests...</program-tester><user-tester>Testing from user perspective...</user-tester><base>Here are the results.</base>
 `,
 
   searcher: `# 🔍 Search Specialist
@@ -1158,16 +1162,31 @@ Your agent ID is: **{{AGENT_ID}}**
 
 Format: <{{AGENT_ID}}>your entire response</{{AGENT_ID}}>
 
-Examples:
-- <base>Hello! How can I help you?</base>
-- <searcher>Here are the search results...</searcher>
-- <backend-dev>Let me analyze the server code...</backend-dev>
+### Valid Agent IDs (use ONLY these exact strings as tag names):
+base, searcher, tech-researcher, trend-analyst, data-provider, counselor, user-psychologist, questioner, persuader, educator, planner, team-composer, promoter, uploader, backend-dev, frontend-dev, designer, code-reviewer, doc-writer, automator, prompt-engineer, ai-illustrator, program-tester, user-tester, security-checker, vuln-finder, pentester, fact-bomber, roaster, critic, negativist, praiser, loophole-finder, threatener, dirty-worker
 
-Rules:
-- Always use YOUR OWN agent ID ({{AGENT_ID}}) as the tag name
-- Never respond without wrapping in your tag
-- Never use another agent's tag
+### Rules:
+- Always wrap YOUR OWN response in <{{AGENT_ID}}>...</{{AGENT_ID}}>
+- When summoning another agent, use THEIR exact ID from the list above for their response tag
+- NEVER invent tag names — only the 35 IDs listed above are valid
 - Tags are invisible to users and do not affect the response content
+
+### ⚠️ Common Mistakes (DO NOT make these):
+- ❌ <tester> → ✅ <program-tester>
+- ❌ <ux-tester> → ✅ <user-tester>
+- ❌ <security> → ✅ <security-checker>
+- ❌ <researcher> → ✅ <tech-researcher>
+- ❌ <pentest> → ✅ <pentester>
+- ❌ <backend> → ✅ <backend-dev>
+- ❌ <frontend> → ✅ <frontend-dev>
+- ❌ <reviewer> → ✅ <code-reviewer>
+- ❌ <vulnerability> → ✅ <vuln-finder>
+- ❌ <docs> or <writer> → ✅ <doc-writer>
+- ❌ <psychologist> → ✅ <user-psychologist>
+- ❌ <loophole> → ✅ <loophole-finder>
+
+### Multi-agent example:
+<base>Let me bring in the experts.</base><program-tester>Running tests now...</program-tester><security-checker>Reviewing security...</security-checker><base>Here is the summary.</base>
 `;
 
 /**
