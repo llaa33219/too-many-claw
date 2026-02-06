@@ -643,7 +643,6 @@ export class GatewayClient extends EventEmitter {
   private handleConnectChallenge(message: GatewayMessage): void {
     const payload = (message as any).payload || {};
     const nonce = payload.nonce;
-    const ts = payload.ts;
 
     this.log(`Received connect.challenge (nonce: ${nonce?.substring(0, 8)}...)`);
 
@@ -656,6 +655,9 @@ export class GatewayClient extends EventEmitter {
 
     // Send connect request in OpenClaw Gateway JSON-RPC format
     // The gateway expects: { type: 'req', id, method: 'connect', params: { ... } }
+    // client.id must be one of: 'cli', 'openclaw-control-ui', 'openclaw-dashboard'
+    // client.mode must be one of: 'operator', 'webchat', 'backend'
+    // token goes in auth.token, not at params root
     const connectRequest = {
       type: 'req',
       id: requestId,
@@ -664,16 +666,16 @@ export class GatewayClient extends EventEmitter {
         minProtocol: 3,
         maxProtocol: 3,
         client: {
-          id: 'too-many-claw',
-          version: '1.0.24',
+          id: 'cli',
+          version: '1.0.26',
           platform: process.platform,
-          mode: 'daemon',
+          mode: 'operator',
         },
         role: 'operator',
         scopes: ['operator.admin', 'operator.approvals'],
-        token: this.config.gatewayToken,
-        nonce: nonce,
-        ts: ts,
+        auth: {
+          token: this.config.gatewayToken,
+        },
       },
     };
 
