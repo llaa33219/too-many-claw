@@ -19,7 +19,6 @@ import { Orchestrator } from './core/Orchestrator.js';
 import { AgentCategory, ModelTier } from './types/index.js';
 import { OpenClawDaemon } from './daemon/index.js';
 import { registerTmcAgents } from './scripts/postinstall.js';
-import { installPlugin as installOpenClawPlugin, isPluginInstalled } from './openclaw-plugin/install.js';
 
 // ============================================
 // Daemon PID File Management
@@ -352,36 +351,6 @@ program
         console.log(chalk.gray('    Cleaned up invalid OpenClaw config keys'));
       }
       
-      // Show plugin installation status and configure with webhook URL
-      const baseWebhookUrl = config.getBaseWebhook();
-      if (registrationResult.pluginInstalled) {
-        console.log(chalk.green('  ✓ OpenClaw tmc-webhook plugin installed'));
-        // Configure the plugin with webhook URL
-        if (baseWebhookUrl) {
-          const { configurePlugin } = await import('./openclaw-plugin/install.js');
-          await configurePlugin(baseWebhookUrl);
-          console.log(chalk.green('  ✓ Plugin configured with webhook URL'));
-        }
-      } else {
-        // Try to install plugin if not already done
-        const installed = await isPluginInstalled();
-        if (installed) {
-          console.log(chalk.gray('  • OpenClaw tmc-webhook plugin already installed'));
-        } else {
-          const pluginResult = await installOpenClawPlugin();
-          if (pluginResult.success) {
-            console.log(chalk.green('  ✓ OpenClaw tmc-webhook plugin installed'));
-          } else {
-            console.log(chalk.yellow('  ⚠ Failed to install OpenClaw plugin'));
-          }
-        }
-        // Configure the plugin with webhook URL regardless
-        if (baseWebhookUrl) {
-          const { configurePlugin } = await import('./openclaw-plugin/install.js');
-          await configurePlugin(baseWebhookUrl);
-          console.log(chalk.green('  ✓ Plugin configured with webhook URL'));
-        }
-      }
       console.log();
     }
 
