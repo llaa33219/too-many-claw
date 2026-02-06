@@ -427,7 +427,9 @@ export class OpenClawDaemon extends EventEmitter {
     if (!this.botMessageSuppressor) return;
 
     this.botMessageSuppressor.on('bot_message_detected', async (detected: DetectedBotMessage) => {
-      const contentHash = this.hashForDedup(detected.content);
+      // Strip agent tags before hashing so dedup matches the Gateway path (which stores stripped content)
+      const strippedContent = detected.content.replace(/<[a-z][a-z0-9-]*>([\s\S]*?)<\/[a-z][a-z0-9-]*>/g, '$1').trim();
+      const contentHash = this.hashForDedup(strippedContent);
       const now = Date.now();
 
       const lastSentAt = this.recentContentHashes.get(contentHash);
@@ -686,24 +688,14 @@ export class OpenClawDaemon extends EventEmitter {
 
   /**
    * Parse content into agent-attributed sections and forward each via webhook.
-   * When Gateway identified a specific agent (not base/default), forward directly.
-   * Only use AgentMessageParser as fallback when agent is unknown/default.
+   * Always runs the parser to strip <agentId> tags and split multi-agent responses.
    */
   private async parseAndForward(content: string, defaultAgent: AgentDefinition): Promise<void> {
-    // When Gateway identified a specific non-default agent, trust it and forward directly
-    const isDefaultAgent = defaultAgent.id === 'base';
-    if (!isDefaultAgent) {
-      this.agentHints.set(this.hashForDedup(content), { agentId: defaultAgent.id, timestamp: Date.now() });
-      await this.forwardToWebhook(defaultAgent, content);
-      return;
-    }
-
-    // Fallback: use parser to detect multi-agent sections in default/base responses
     const sections = this.messageParser.parse(content, defaultAgent);
 
     for (const section of sections) {
       if (section.agent.id !== defaultAgent.id) {
-        this.forceLog(`🔀 Parsed agent switch: ${section.agent.emoji} ${section.agent.name}`);
+        this.forceLog(`🔀 Agent: ${section.agent.emoji} ${section.agent.name}`);
       }
       this.agentHints.set(this.hashForDedup(section.content), { agentId: section.agent.id, timestamp: Date.now() });
       await this.forwardToWebhook(section.agent, section.content);

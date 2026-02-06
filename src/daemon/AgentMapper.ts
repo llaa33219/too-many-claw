@@ -67,7 +67,7 @@ export class AgentMapper {
     
     // Special cases for common agent names
     const specialAliases: Record<string, string[]> = {
-      'base': ['coordinator', 'main', 'primary', 'default', 'openclaw'],
+      'base': ['coordinator', 'main', 'primary', 'default', 'openclaw', 'assistant'],
       'backend-dev': ['backend', 'server', 'api'],
       'frontend-dev': ['frontend', 'ui', 'web'],
       'code-reviewer': ['reviewer', 'review'],
