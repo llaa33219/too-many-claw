@@ -19,6 +19,7 @@ import { Orchestrator } from './core/Orchestrator.js';
 import { AgentCategory, ModelTier } from './types/index.js';
 import { OpenClawDaemon } from './daemon/index.js';
 import { registerTmcAgents } from './scripts/postinstall.js';
+import { installPlugin as installOpenClawPlugin, isPluginInstalled } from './openclaw-plugin/install.js';
 
 // ============================================
 // Daemon PID File Management
@@ -345,10 +346,42 @@ program
       // Show webhook mode status (only on success)
       if (registrationResult.webhookModeConfigured) {
         console.log(chalk.green('  ✓ Webhook-only mode enabled'));
-        console.log(chalk.gray('    OpenClaw bot message sending disabled - only TMC webhooks will respond\n'));
+        console.log(chalk.gray('    OpenClaw bot message sending disabled - only TMC webhooks will respond'));
       } else {
-        console.log(chalk.gray('  • Webhook-only mode already configured\n'));
+        console.log(chalk.gray('  • Webhook-only mode already configured'));
       }
+      
+      // Show plugin installation status and configure with webhook URL
+      const baseWebhookUrl = config.getBaseWebhook();
+      if (registrationResult.pluginInstalled) {
+        console.log(chalk.green('  ✓ OpenClaw tmc-webhook plugin installed'));
+        // Configure the plugin with webhook URL
+        if (baseWebhookUrl) {
+          const { configurePlugin } = await import('./openclaw-plugin/install.js');
+          await configurePlugin(baseWebhookUrl);
+          console.log(chalk.green('  ✓ Plugin configured with webhook URL'));
+        }
+      } else {
+        // Try to install plugin if not already done
+        const installed = await isPluginInstalled();
+        if (installed) {
+          console.log(chalk.gray('  • OpenClaw tmc-webhook plugin already installed'));
+        } else {
+          const pluginResult = await installOpenClawPlugin();
+          if (pluginResult.success) {
+            console.log(chalk.green('  ✓ OpenClaw tmc-webhook plugin installed'));
+          } else {
+            console.log(chalk.yellow('  ⚠ Failed to install OpenClaw plugin'));
+          }
+        }
+        // Configure the plugin with webhook URL regardless
+        if (baseWebhookUrl) {
+          const { configurePlugin } = await import('./openclaw-plugin/install.js');
+          await configurePlugin(baseWebhookUrl);
+          console.log(chalk.green('  ✓ Plugin configured with webhook URL'));
+        }
+      }
+      console.log();
     }
 
     // Step 5: Start daemon?

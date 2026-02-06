@@ -9,6 +9,7 @@ import path from 'path';
 import os from 'os';
 import { AGENT_DEFINITIONS } from '../agents/definitions.js';
 import { SOUL_TEMPLATES } from '../agents/souls/index.js';
+import { installPlugin as installOpenClawPlugin } from '../openclaw-plugin/install.js';
 
 const OPENCLAW_DIR = path.join(os.homedir(), '.openclaw');
 
@@ -22,6 +23,7 @@ export interface AgentRegistrationResult {
   alreadyExisted: string[];  // agent IDs that already existed
   workspacesCreated: number;
   webhookModeConfigured: boolean;  // true if replyToMode was set to 'off'
+  pluginInstalled: boolean;        // true if OpenClaw plugin was installed
   error?: string;
 }
 
@@ -50,6 +52,10 @@ async function postinstall(): Promise<void> {
   
   console.log('✓ Created SKILL.md');
 
+  if (result.pluginInstalled) {
+    console.log('✓ Installed OpenClaw tmc-webhook plugin');
+  }
+  
   console.log('\n🦀 Too Many Claw setup complete!');
   console.log('\nNext steps:');
   console.log('  1. Run `tmc setup` to configure Discord and webhooks');
@@ -202,6 +208,7 @@ export async function registerTmcAgents(): Promise<AgentRegistrationResult> {
     alreadyExisted: [],
     workspacesCreated: 0,
     webhookModeConfigured: false,
+    pluginInstalled: false,
   };
 
   try {
@@ -231,7 +238,11 @@ export async function registerTmcAgents(): Promise<AgentRegistrationResult> {
     result.alreadyExisted = mergeResult.alreadyExisted;
     result.webhookModeConfigured = mergeResult.webhookModeConfigured;
 
-    // 4. Create SKILL.md
+    // 4. Install OpenClaw tmc-webhook plugin
+    const pluginResult = await installOpenClawPlugin();
+    result.pluginInstalled = pluginResult.success;
+
+    // 5. Create SKILL.md
     const skillPath = path.join(OPENCLAW_DIR, 'skills', 'too-many-claw', 'SKILL.md');
     await fs.ensureDir(path.dirname(skillPath));
     await fs.writeFile(skillPath, generateSkillMd(), 'utf-8');
