@@ -342,9 +342,9 @@ program
         console.log(chalk.gray(`  ${registrationResult.totalAgents} agents configured in OpenClaw`));
       }
 
-      // Show message interception info
-      console.log(chalk.green('  ✓ Message interception enabled'));
-      console.log(chalk.gray('    TMC daemon will intercept OpenClaw bot messages and resend via webhook'));
+      // Show bot message suppression info
+      console.log(chalk.green('  ✓ Bot message suppression enabled'));
+      console.log(chalk.gray('    TMC daemon sends via webhook directly; duplicate bot messages are deleted'));
       
       // Clean up any invalid OpenClaw config keys
       if (registrationResult.webhookModeConfigured) {
@@ -768,7 +768,7 @@ daemonCommand
   .option('-v, --verbose', 'Enable verbose logging')
   .option('--url <url>', 'OpenClaw Gateway URL', 'ws://127.0.0.1:18789')
   .option('-d, --detach', 'Run daemon in background')
-  .option('--no-intercept', 'Disable message interception (don\'t delete bot messages)')
+  .option('--no-intercept', 'Disable bot message suppression (don\'t delete duplicate bot messages)')
   .action(async (options) => {
     // Handle detach mode - fork to background
     if (options.detach) {
@@ -841,16 +841,16 @@ daemonCommand
       console.log(chalk.green(`✓ ${Object.keys(webhooks).length} webhooks loaded`));
     }
 
-    // Show message interception status
+    // Show bot message suppression status
     const discordConfig = config.getDiscordConfig();
     if (options.intercept !== false && discordConfig.token) {
-      console.log(chalk.green('✓ Message interception enabled'));
-      console.log(chalk.gray('  Bot messages will be deleted and resent via webhook\n'));
+      console.log(chalk.green('✓ Bot message suppression enabled'));
+      console.log(chalk.gray('  Duplicate bot messages will be deleted; webhooks deliver agent identity\n'));
     } else if (options.intercept === false) {
-      console.log(chalk.yellow('⚠ Message interception disabled'));
-      console.log(chalk.gray('  Bot messages will NOT be replaced with webhook messages\n'));
+      console.log(chalk.yellow('⚠ Bot message suppression disabled'));
+      console.log(chalk.gray('  OpenClaw bot messages will NOT be suppressed\n'));
     } else {
-      console.log(chalk.yellow('⚠ Message interception unavailable (no Discord token)'));
+      console.log(chalk.yellow('⚠ Bot message suppression unavailable (no Discord token)'));
       console.log(chalk.gray('  Run `tmc setup` to configure Discord\n'));
     }
 
@@ -858,7 +858,7 @@ daemonCommand
       gatewayUrl: options.url,
       verbose: options.verbose || false,
       autoStart: true,
-      interceptMessages: options.intercept !== false,
+      suppressBotMessages: options.intercept !== false,
     });
 
     let statusSpinner = ora('Connecting to OpenClaw Gateway...').start();
@@ -945,6 +945,7 @@ daemonCommand
       console.log(chalk.white(`  Uptime: ${formatUptime(stats.uptimeMs)}`));
       console.log(chalk.white(`  Messages processed: ${stats.messagesProcessed}`));
       console.log(chalk.white(`  Messages forwarded: ${stats.messagesForwarded}`));
+      console.log(chalk.white(`  Messages suppressed: ${stats.messagesSuppressed}`));
       console.log(chalk.white(`  Webhook errors: ${stats.webhookErrors}`));
       console.log(chalk.cyan('━━━━━━━━━━━━━━━━━━━━━━━━\n'));
 

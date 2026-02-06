@@ -5,4 +5,4 @@
 export { DiscordAdapter } from './DiscordAdapter.js';
 export { WebhookManager } from './WebhookManager.js';
 
-export { BotMessageMonitor, BotMessageMonitorConfig, BotMessageMonitorEvents } from './BotMessageMonitor.js';
+export { BotMessageSuppressor, BotMessageSuppressorConfig, BotMessageSuppressorEvents } from './BotMessageSuppressor.js';

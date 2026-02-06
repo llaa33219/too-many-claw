@@ -7,7 +7,7 @@ import { EventEmitter } from 'events';
 import { execSync } from 'child_process';
 import { GatewayClient, ConnectionState, AgentResponseMessage, GatewayMessage, ChannelMessage, extractTextContent } from '../openclaw/GatewayClient.js';
 import { WebhookManager } from '../discord/WebhookManager.js';
-import { BotMessageMonitor } from '../discord/BotMessageMonitor.js';
+import { BotMessageSuppressor } from '../discord/BotMessageSuppressor.js';
 import { ConfigManager } from '../config/ConfigManager.js';
 import { AgentMapper } from './AgentMapper.js';
 import { AgentDefinition } from '../types/index.js';
@@ -22,7 +22,9 @@ export interface DaemonConfig {
   processCheckInterval?: number;
   /** Enable verbose logging (default: false) */
   verbose?: boolean;
-  /** Enable message interception (delete bot messages and resend via webhook) */
+  /** Enable bot message suppression (delete OpenClaw's direct bot messages) */
+  suppressBotMessages?: boolean;
+  /** @deprecated Use suppressBotMessages instead */
   interceptMessages?: boolean;
 }
 
@@ -36,6 +38,8 @@ export interface DaemonStats {
   messagesProcessed: number;
   /** Number of messages forwarded to webhooks */
   messagesForwarded: number;
+  /** Number of bot messages suppressed */
+  messagesSuppressed: number;
   /** Number of failed webhook sends */
   webhookErrors: number;
   /** Last message timestamp */
@@ -67,6 +71,7 @@ const DEFAULT_CONFIG: Required<DaemonConfig> = {
   autoStart: true,
   processCheckInterval: 5000,
   verbose: false,
+  suppressBotMessages: true,
   interceptMessages: true,
 };
 
@@ -77,7 +82,7 @@ export class OpenClawDaemon extends EventEmitter {
   private config: Required<DaemonConfig>;
   private gatewayClient: GatewayClient;
   private webhookManager: WebhookManager;
-  private botMessageMonitor: BotMessageMonitor | null = null;
+  private botMessageSuppressor: BotMessageSuppressor | null = null;
   private configManager: ConfigManager;
   private agentMapper: AgentMapper;
   
@@ -90,6 +95,7 @@ export class OpenClawDaemon extends EventEmitter {
   private messagesProcessed = 0;
   private messagesForwarded = 0;
   private webhookErrors = 0;
+  private messagesSuppressed = 0;
   private lastMessageAt: Date | null = null;
   private reconnectAttempts = 0;
   
@@ -102,10 +108,18 @@ export class OpenClawDaemon extends EventEmitter {
   
   // Buffer stale threshold in ms (60 seconds)
   private readonly BUFFER_STALE_THRESHOLD = 60000;
+  
+  // Dedup: track recently sent webhook messages to prevent double-sends
+  private recentlySent: Map<string, number> = new Map();
+  private readonly DEDUP_TTL = 10000; // 10 seconds
 
   constructor(config: DaemonConfig = {}) {
     super();
     this.config = { ...DEFAULT_CONFIG, ...config };
+    // Backward compatibility: interceptMessages → suppressBotMessages
+    if (config.interceptMessages !== undefined && config.suppressBotMessages === undefined) {
+      this.config.suppressBotMessages = config.interceptMessages;
+    }
     
     this.configManager = new ConfigManager();
     this.webhookManager = new WebhookManager();
@@ -154,8 +168,8 @@ export class OpenClawDaemon extends EventEmitter {
       this.startProcessDetection();
     }
 
-    // Set up and start the bot message monitor
-    await this.setupBotMessageMonitor();
+    // Set up bot message suppressor
+    await this.setupBotMessageSuppressor();
 
     // Try to connect immediately
     await this.connect();
@@ -176,9 +190,9 @@ export class OpenClawDaemon extends EventEmitter {
     this.stopBufferCleanup();
     await this.gatewayClient.disconnect();
     
-    // Disconnect bot message monitor
-    if (this.botMessageMonitor) {
-      await this.botMessageMonitor.disconnect();
+    // Disconnect bot message suppressor
+    if (this.botMessageSuppressor) {
+      await this.botMessageSuppressor.disconnect();
     }
     
     this.webhookManager.destroy();
@@ -208,6 +222,7 @@ export class OpenClawDaemon extends EventEmitter {
       connectionState: this.gatewayClient.connectionState,
       messagesProcessed: this.messagesProcessed,
       messagesForwarded: this.messagesForwarded,
+      messagesSuppressed: this.messagesSuppressed,
       webhookErrors: this.webhookErrors,
       lastMessageAt: this.lastMessageAt,
       uptimeMs: this.startTime ? Date.now() - this.startTime.getTime() : 0,
@@ -288,14 +303,10 @@ export class OpenClawDaemon extends EventEmitter {
     });
 
     this.gatewayClient.on('agent_response', (message: AgentResponseMessage) => {
-      // Register the message with BotMessageMonitor before OpenClaw sends it to Discord
-      this.registerPendingMessageForMonitor(message);
       this.handleAgentResponse(message);
     });
 
     this.gatewayClient.on('agent_delta', (message: AgentResponseMessage) => {
-      // Don't register deltas - they are partial content that won't match the final Discord message
-      // Instead, we register the accumulated buffer content in handleAgentEnd
       this.handleAgentDelta(message);
     });
 
@@ -304,8 +315,6 @@ export class OpenClawDaemon extends EventEmitter {
     });
 
     this.gatewayClient.on('agent_end', (message: AgentResponseMessage) => {
-      // Register the final message as well
-      this.registerPendingMessageForMonitor(message);
       this.handleAgentEnd(message);
     });
 
@@ -313,7 +322,7 @@ export class OpenClawDaemon extends EventEmitter {
       this.handleChannelMessage(message);
     });
 
-    // message_sent events are no longer used - BotMessageMonitor handles interception directly
+    // message_sent events are not used - daemon sends via webhook directly
   }
 
   /**
@@ -344,98 +353,49 @@ export class OpenClawDaemon extends EventEmitter {
   }
 
   /**
-   * Set up bot message monitor for delete-and-resend functionality
-   * Uses Discord.js Client to directly monitor for bot messages
+   * Set up bot message suppressor to delete OpenClaw's direct Discord messages.
+   * The daemon sends via webhook directly — the suppressor just cleans up duplicates.
    */
-  private async setupBotMessageMonitor(): Promise<void> {
-    if (!this.config.interceptMessages) {
-      this.log('Message interception disabled');
+  private async setupBotMessageSuppressor(): Promise<void> {
+    if (!this.config.suppressBotMessages) {
+      this.log('Bot message suppression disabled');
       return;
     }
 
     const discordConfig = this.configManager.getDiscordConfig();
     
     if (!discordConfig.token) {
-      this.log('Discord token not configured - message interception disabled');
+      this.log('Discord token not configured - bot message suppression disabled');
       return;
     }
 
-    this.botMessageMonitor = new BotMessageMonitor(
-      {
-        botToken: discordConfig.token,
-        channelId: discordConfig.chatChannelId,
-        verbose: this.config.verbose,
-        deleteDelay: 150, // Small delay to ensure message is sent
-      },
-      this.webhookManager,
-      this.agentMapper
-    );
-
-    // Set up monitor event handlers
-    this.botMessageMonitor.on('ready', (botId: string, botTag: string) => {
-      this.forceLog(`Bot message monitor ready: ${botTag}`);
+    this.botMessageSuppressor = new BotMessageSuppressor({
+      botToken: discordConfig.token,
+      channelId: discordConfig.chatChannelId,
+      verbose: this.config.verbose,
+      deleteDelay: 150,
     });
 
-    this.botMessageMonitor.on('intercepted', (messageId: string, channelId: string, agentId: string) => {
-      this.log(`Intercepted message ${messageId} in channel ${channelId} from agent ${agentId}`);
+    this.botMessageSuppressor.on('ready', (_botId: string, botTag: string) => {
+      this.forceLog(`Bot message suppressor ready: ${botTag}`);
     });
 
-    this.botMessageMonitor.on('deleted', (messageId: string, channelId: string) => {
-      this.log(`Deleted bot message ${messageId} from channel ${channelId}`);
+    this.botMessageSuppressor.on('suppressed', (messageId: string, channelId: string) => {
+      this.messagesSuppressed++;
+      this.log(`Suppressed bot message ${messageId} in channel ${channelId}`);
     });
 
-    this.botMessageMonitor.on('resent', (agentId: string, content: string) => {
-      this.messagesForwarded++;
-      this.emit('message_forwarded', agentId, content);
-      this.log(`Resent message via webhook as ${agentId}`);
-    });
-
-    this.botMessageMonitor.on('error', (error: Error, context: string) => {
-      this.log(`Monitor error in ${context}: ${error.message}`);
+    this.botMessageSuppressor.on('error', (error: Error, context: string) => {
+      this.log(`Suppressor error in ${context}: ${error.message}`);
       this.emit('error', error);
     });
 
-    // Connect to Discord
     try {
-      await this.botMessageMonitor.connect();
-      this.forceLog('Message interception enabled - bot messages will be replaced with webhook messages');
+      await this.botMessageSuppressor.connect();
+      this.forceLog('Bot message suppression enabled — duplicate bot messages will be deleted');
     } catch (error) {
-      this.forceLog(`Failed to connect bot message monitor: ${error instanceof Error ? error.message : 'Unknown error'}`);
-      this.botMessageMonitor = null;
-    }
-  }
-
-  /**
-   * Register a pending message with BotMessageMonitor
-   * This allows the monitor to know which agent sent the message
-   */
-  private registerPendingMessageForMonitor(message: AgentResponseMessage): void {
-    if (!this.botMessageMonitor) return;
-    
-    const agentIdentifier = this.extractAgentIdentifier(message);
-    const agent = this.agentMapper.resolve(agentIdentifier);
-    const agentId = agent?.id || 'base';
-    
-    // Log for debugging
-    if (this.config.verbose) {
-      this.log(`registerPendingMessageForMonitor - identifier: ${agentIdentifier}, resolved to: ${agentId}`);
-    }
-    
-    // Extract content
-    let content = '';
-    if (typeof message.content === 'string') {
-      content = message.content;
-    } else if (Array.isArray(message.content)) {
-      content = extractTextContent(message.content);
-    } else if (typeof message.delta === 'string') {
-      content = message.delta;
-    } else if ((message as any).text) {
-      content = (message as any).text;
-    }
-    
-    if (content && content.trim()) {
-      this.botMessageMonitor.registerPendingMessage(agentId, content);
-      this.log(`Registered pending message for ${agentId}: ${content.substring(0, 50)}...`);
+      this.forceLog(`Failed to connect bot message suppressor: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      this.botMessageSuppressor = null;
     }
   }
 
@@ -471,13 +431,11 @@ export class OpenClawDaemon extends EventEmitter {
 
   /**
    * Handle agent response (complete response)
-   * Note: When message interception is enabled, we skip direct webhook forwarding here
-   * because the message_sent event handler will intercept and resend via webhook.
+   * Always forwards directly via webhook with correct agent identity.
    */
   private async handleAgentResponse(message: AgentResponseMessage): Promise<void> {
     const agentIdentifier = this.extractAgentIdentifier(message);
     
-    // Log for debugging
     if (this.config.verbose) {
       this.log(`Agent response - extracted identifier: ${agentIdentifier}`);
     }
@@ -489,7 +447,6 @@ export class OpenClawDaemon extends EventEmitter {
     } else if (Array.isArray(message.content)) {
       content = extractTextContent(message.content);
     } else {
-      // Try other possible content fields
       content = (message as any).text || (message as any).message || '';
     }
     
@@ -498,18 +455,10 @@ export class OpenClawDaemon extends EventEmitter {
       return;
     }
 
-    // Resolve agent or use default
     const agent = this.agentMapper.resolve(agentIdentifier) || this.agentMapper.getDefaultAgent();
     
     this.log(`Agent response from ${agent.name}: ${content.substring(0, 100)}...`);
     this.emit('message_received', agent.id, content);
-    
-    // If message interception is enabled, don't forward here - BotMessageMonitor handles it
-    // This avoids duplicate messages (one from here, one from interception)
-    if (this.botMessageMonitor && this.botMessageMonitor.isEnabled()) {
-      this.log('Skipping direct webhook forward (message interception enabled)');
-      return;
-    }
     
     await this.forwardToWebhook(agent, content);
   }
@@ -620,24 +569,19 @@ export class OpenClawDaemon extends EventEmitter {
 
   /**
    * Handle agent end event (flush buffer and send)
-   * Note: When message interception is enabled, we skip direct webhook forwarding here
-   * because the message_sent event handler will intercept and resend via webhook.
+   * Always forwards directly via webhook. Dedup prevents double-sends.
    */
   private async handleAgentEnd(message: AgentResponseMessage): Promise<void> {
     const messageId = message.id || (message as any).runId || message.agentId || message.agentName || 'default';
     const agentIdentifier = this.extractAgentIdentifier(message);
     
-    // Log for debugging
     if (this.config.verbose) {
       this.log(`Agent end - messageId: ${messageId}, extracted identifier: ${agentIdentifier}`);
     }
     
     this.log(`Agent end event [${messageId}] from: ${agentIdentifier}`);
     
-    // If message interception is enabled, skip direct webhook forwarding
-    const skipWebhook = this.botMessageMonitor && this.botMessageMonitor.isEnabled();
-    
-    // Check if there's buffered content to send
+    // Flush buffered streaming content
     const buffered = this.responseBuffers.get(messageId);
     if (buffered && buffered.content && buffered.content.trim()) {
       const agent = this.agentMapper.resolve(buffered.agentId) || this.agentMapper.getDefaultAgent();
@@ -645,19 +589,7 @@ export class OpenClawDaemon extends EventEmitter {
       this.log(`Flushing buffer for ${agent.name}: ${buffered.content.length} chars`);
       this.emit('message_received', agent.id, buffered.content);
       
-      // Register the accumulated buffer content with BotMessageMonitor
-      // This is the full content that will match the final Discord message
-      if (this.botMessageMonitor) {
-        this.botMessageMonitor.registerPendingMessage(agent.id, buffered.content);
-        this.forceLog(`📝 Registered streaming response for ${agent.emoji} ${agent.name}`);
-      }
-      
-      if (!skipWebhook) {
-        await this.forwardToWebhook(agent, buffered.content);
-      } else {
-        this.log('Skipping direct webhook forward (message interception enabled)');
-      }
-      
+      await this.forwardToWebhook(agent, buffered.content);
       this.responseBuffers.delete(messageId);
     }
     
@@ -676,11 +608,7 @@ export class OpenClawDaemon extends EventEmitter {
       this.log(`End message content for ${agent.name}: ${content.length} chars`);
       this.emit('message_received', agent.id, content);
       
-      if (!skipWebhook) {
-        await this.forwardToWebhook(agent, content);
-      } else {
-        this.log('Skipping direct webhook forward (message interception enabled)');
-      }
+      await this.forwardToWebhook(agent, content);
     }
     
     // Mark agent as exited if appropriate
@@ -702,24 +630,28 @@ export class OpenClawDaemon extends EventEmitter {
     }
   }
 
-  // Note: handleMessageSent has been removed.
-  // Message interception is now handled by BotMessageMonitor which directly monitors Discord
-  // for bot messages using Discord.js Client, instead of depending on Gateway events.
-
   /**
-   * Forward a message to Discord via webhook
-   * Uses sendAsAgentDirect to pass agent info directly, allowing base webhook to use correct username/avatar
+   * Forward a message to Discord via webhook with deduplication.
+   * Uses sendAsAgentDirect to pass agent info directly, allowing base webhook to use correct username/avatar.
    */
   private async forwardToWebhook(agent: AgentDefinition, content: string): Promise<void> {
-    // Check if we can send via any webhook (agent-specific or base)
     if (!this.webhookManager.canSend(agent.id)) {
       this.log(`No webhook available for agent: ${agent.id}`);
       return;
     }
 
+    // Dedup: skip if we recently sent the same content for the same agent
+    const dedupKey = `${agent.id}:${this.hashForDedup(content)}`;
+    const now = Date.now();
+    const lastSent = this.recentlySent.get(dedupKey);
+    if (lastSent && now - lastSent < this.DEDUP_TTL) {
+      this.log(`Dedup: skipping duplicate webhook send for ${agent.name}`);
+      return;
+    }
+
     try {
-      // Use sendAsAgentDirect to ensure correct username/avatar even with base webhook
       await this.webhookManager.sendAsAgentDirect(agent, content);
+      this.recentlySent.set(dedupKey, now);
       this.messagesForwarded++;
       this.emit('message_forwarded', agent.id, content);
       this.log(`Forwarded message from ${agent.emoji} ${agent.name}`);
@@ -727,6 +659,26 @@ export class OpenClawDaemon extends EventEmitter {
       this.webhookErrors++;
       this.log(`Failed to forward message: ${error instanceof Error ? error.message : 'Unknown error'}`);
       this.emit('error', error instanceof Error ? error : new Error('Webhook send failed'));
+    }
+  }
+
+  /**
+   * Simple content hash for deduplication
+   */
+  private hashForDedup(content: string): string {
+    const normalized = content.trim().replace(/\s+/g, ' ').toLowerCase();
+    return `${normalized.substring(0, 200)}|${normalized.length}`;
+  }
+
+  /**
+   * Clean up expired dedup entries
+   */
+  private cleanupDedupCache(): void {
+    const now = Date.now();
+    for (const [key, timestamp] of this.recentlySent) {
+      if (now - timestamp > this.DEDUP_TTL) {
+        this.recentlySent.delete(key);
+      }
     }
   }
 
@@ -782,13 +734,9 @@ export class OpenClawDaemon extends EventEmitter {
       const now = Date.now();
       let cleanedCount = 0;
       
-      // Don't forward via webhook if interception is enabled
-      const skipWebhook = this.botMessageMonitor && this.botMessageMonitor.isEnabled();
-      
       for (const [id, buffer] of this.responseBuffers) {
         if (now - buffer.lastUpdate > this.BUFFER_STALE_THRESHOLD) {
-          // Buffer is stale - flush it if it has content (and interception is off)
-          if (buffer.content.trim() && !skipWebhook) {
+          if (buffer.content.trim()) {
             const agent = this.agentMapper.resolve(buffer.agentId) || this.agentMapper.getDefaultAgent();
             this.forwardToWebhook(agent, buffer.content).catch(() => {});
           }
@@ -796,6 +744,9 @@ export class OpenClawDaemon extends EventEmitter {
           cleanedCount++;
         }
       }
+      
+      // Also clean up expired dedup entries
+      this.cleanupDedupCache();
       
       if (cleanedCount > 0 && this.config.verbose) {
         this.log(`Cleaned ${cleanedCount} stale response buffer(s)`);
