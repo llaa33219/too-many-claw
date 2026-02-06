@@ -404,9 +404,14 @@ export class OpenClawDaemon extends EventEmitter {
   private registerPendingMessageForMonitor(message: AgentResponseMessage): void {
     if (!this.botMessageMonitor) return;
     
-    const agentIdentifier = message.agentId || message.agentName || (message as any).agent || (message as any).name;
+    const agentIdentifier = this.extractAgentIdentifier(message);
     const agent = this.agentMapper.resolve(agentIdentifier);
     const agentId = agent?.id || 'base';
+    
+    // Log for debugging
+    if (this.config.verbose) {
+      this.log(`registerPendingMessageForMonitor - identifier: ${agentIdentifier}, resolved to: ${agentId}`);
+    }
     
     // Extract content
     let content = '';
@@ -444,6 +449,15 @@ export class OpenClawDaemon extends EventEmitter {
       if ((message as any).stream) {
         this.log(`  Stream: ${(message as any).stream}`);
       }
+      if ((message as any).agentId) {
+        this.log(`  AgentId: ${(message as any).agentId}`);
+      }
+      if ((message as any).runId) {
+        this.log(`  RunId: ${(message as any).runId}`);
+      }
+      if ((message as any).data) {
+        this.log(`  Data keys: ${Object.keys((message as any).data).join(', ')}`);
+      }
     }
   }
 
@@ -453,7 +467,12 @@ export class OpenClawDaemon extends EventEmitter {
    * because the message_sent event handler will intercept and resend via webhook.
    */
   private async handleAgentResponse(message: AgentResponseMessage): Promise<void> {
-    const agentIdentifier = message.agentId || message.agentName || (message as any).agent || (message as any).name;
+    const agentIdentifier = this.extractAgentIdentifier(message);
+    
+    // Log for debugging
+    if (this.config.verbose) {
+      this.log(`Agent response - extracted identifier: ${agentIdentifier}`);
+    }
     
     // Extract content - handle both string and array formats
     let content = '';
@@ -488,10 +507,53 @@ export class OpenClawDaemon extends EventEmitter {
   }
 
   /**
+   * Extract agent identifier from OpenClaw Gateway message
+   * Checks multiple fields since OpenClaw may send agent info in different places
+   */
+  private extractAgentIdentifier(message: AgentResponseMessage): string {
+    // Direct fields
+    if (message.agentId) return message.agentId;
+    if (message.agentName) return message.agentName;
+    if ((message as any).agent) return (message as any).agent;
+    if ((message as any).name) return (message as any).name;
+    
+    // Check nested data object
+    const data = (message as any).data;
+    if (data) {
+      if (data.agentId) return data.agentId;
+      if (data.agentName) return data.agentName;
+      if (data.agent) return data.agent;
+      if (data.name) return data.name;
+    }
+    
+    // Check runId - might contain agent info like "base-12345" or "agentId-xxx"
+    const runId = message.id || (message as any).runId;
+    if (runId && typeof runId === 'string') {
+      // Try to extract agent from runId formats like "base-xxx" or "searcher-xxx"
+      const runIdMatch = runId.match(/^([a-z][a-z0-9-]*)-[a-z0-9]+$/i);
+      if (runIdMatch) {
+        const potentialAgent = runIdMatch[1];
+        // Verify it's a known agent ID
+        if (this.agentMapper.resolve(potentialAgent)) {
+          return potentialAgent;
+        }
+      }
+    }
+    
+    // Log for debugging when we can't find agent
+    if (this.config.verbose) {
+      this.log(`Could not extract agent from message. Keys: ${Object.keys(message).join(', ')}`);
+      this.log(`  Full message: ${JSON.stringify(message).substring(0, 300)}`);
+    }
+    
+    return 'assistant';
+  }
+
+  /**
    * Handle streaming delta (partial response)
    */
   private handleAgentDelta(message: AgentResponseMessage): void {
-    const agentIdentifier = message.agentId || message.agentName || (message as any).agent || 'assistant';
+    const agentIdentifier = this.extractAgentIdentifier(message);
     
     // Extract delta content
     let delta = '';
@@ -555,7 +617,12 @@ export class OpenClawDaemon extends EventEmitter {
    */
   private async handleAgentEnd(message: AgentResponseMessage): Promise<void> {
     const messageId = message.id || (message as any).runId || message.agentId || message.agentName || 'default';
-    const agentIdentifier = message.agentId || message.agentName || (message as any).agent || 'assistant';
+    const agentIdentifier = this.extractAgentIdentifier(message);
+    
+    // Log for debugging
+    if (this.config.verbose) {
+      this.log(`Agent end - messageId: ${messageId}, extracted identifier: ${agentIdentifier}`);
+    }
     
     this.log(`Agent end event [${messageId}] from: ${agentIdentifier}`);
     

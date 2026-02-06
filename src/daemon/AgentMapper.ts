@@ -32,6 +32,14 @@ export class AgentMapper {
       const normalizedName = this.normalizeName(agent.name);
       this.nameMap.set(normalizedName, agent);
       
+      // Map by OpenClaw agent name format: "emoji name" (e.g., "🏠 Base")
+      const openClawName = `${agent.emoji} ${agent.name}`.toLowerCase();
+      this.nameMap.set(openClawName, agent);
+      this.nameMap.set(this.normalizeName(openClawName), agent);
+      
+      // Also map just the emoji
+      this.aliasMap.set(agent.emoji, agent);
+      
       // Common aliases and variations
       this.buildAliases(agent);
     }
@@ -101,13 +109,28 @@ export class AgentMapper {
       return this.getDefaultAgent();
     }
 
-    const normalized = identifier.toLowerCase().trim();
+    // Clean up the identifier - remove leading emoji if present
+    let cleanIdentifier = identifier.trim();
+    
+    // Check if identifier starts with an emoji - extract just the emoji for lookup
+    const emojiMatch = cleanIdentifier.match(/^([\p{Emoji}])\s*/u);
+    if (emojiMatch) {
+      const emoji = emojiMatch[1];
+      const byEmoji = this.aliasMap.get(emoji);
+      if (byEmoji) return byEmoji;
+    }
+
+    const normalized = cleanIdentifier.toLowerCase().trim();
 
     // Try exact ID match
     const byId = this.idMap.get(normalized);
     if (byId) return byId;
 
-    // Try name match
+    // Try OpenClaw format match ("emoji name")
+    const byOpenClawName = this.nameMap.get(normalized);
+    if (byOpenClawName) return byOpenClawName;
+
+    // Try name match (normalized - removes all non-alphanumeric)
     const byName = this.nameMap.get(this.normalizeName(identifier));
     if (byName) return byName;
 

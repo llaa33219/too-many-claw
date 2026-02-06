@@ -173,7 +173,9 @@ export class BotMessageMonitor extends EventEmitter {
       timestamp: Date.now(),
     });
     
-    this.log(`Registered pending message for agent ${agentId}: ${content.substring(0, 50)}...`);
+    // Always log registration so we can debug agent matching
+    this.forceLog(`📝 Registered pending: ${agentId} → "${content.substring(0, 40)}..."`);
+    this.log(`  Hash: ${hash.substring(0, 50)}`);
     
     // Clean up old entries
     this.cleanupPendingMessages();
@@ -218,10 +220,14 @@ export class BotMessageMonitor extends EventEmitter {
     const hash = this.hashContent(content);
     const pending = this.pendingMessages.get(hash);
     
+    this.log(`Looking up agent for content: "${content.substring(0, 40)}..."`);
+    this.log(`  Generated hash: ${hash.substring(0, 50)}`);
+    this.log(`  Pending messages count: ${this.pendingMessages.size}`);
+    
     if (pending && Date.now() - pending.timestamp < this.PENDING_MESSAGE_TTL) {
       // Remove from pending after use
       this.pendingMessages.delete(hash);
-      this.log(`Found pending agent ${pending.agentId} for message`);
+      this.forceLog(`✓ Found pending agent ${pending.agentId} via exact hash match`);
       return pending.agentId;
     }
     
@@ -234,9 +240,17 @@ export class BotMessageMonitor extends EventEmitter {
           pendingContent.includes(normalizedContent.substring(0, 100))) {
         if (Date.now() - data.timestamp < this.PENDING_MESSAGE_TTL) {
           this.pendingMessages.delete(pendingHash);
-          this.log(`Found pending agent ${data.agentId} via partial match`);
+          this.forceLog(`✓ Found pending agent ${data.agentId} via partial match`);
           return data.agentId;
         }
+      }
+    }
+    
+    // Log all pending messages for debugging when lookup fails
+    if (this.pendingMessages.size > 0) {
+      this.log(`No match found. Current pending messages:`);
+      for (const [pendingHash, data] of this.pendingMessages) {
+        this.log(`  - ${data.agentId}: ${pendingHash.substring(0, 50)}...`);
       }
     }
     
@@ -329,13 +343,13 @@ export class BotMessageMonitor extends EventEmitter {
         // Found agent from Gateway event
         agent = this.agentMapper.resolve(pendingAgentId) || this.agentMapper.getDefaultAgent();
         cleanContent = message.content; // Keep content as-is, no need to strip agent prefix
-        this.log(`Using agent ${agent.id} from Gateway event`);
+        this.forceLog(`→ Using agent ${agent.emoji} ${agent.name} from Gateway event`);
       } else {
         // Fallback: try to extract agent from message content
         const extracted = this.extractAgentFromContent(message.content);
         agent = extracted.agent;
         cleanContent = extracted.cleanContent;
-        this.log(`Using agent ${agent.id} from content extraction (fallback)`);
+        this.forceLog(`→ Using agent ${agent.emoji} ${agent.name} from content extraction (fallback)`);
       }
       
       this.emit('intercepted', message.id, message.channel.id, agent.id);
