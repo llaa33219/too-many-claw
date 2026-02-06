@@ -655,8 +655,8 @@ export class GatewayClient extends EventEmitter {
 
     // Send connect request in OpenClaw Gateway JSON-RPC format
     // The gateway expects: { type: 'req', id, method: 'connect', params: { ... } }
-    // client.id must be one of: 'cli', 'openclaw-control-ui', 'openclaw-dashboard'
-    // client.mode must be one of: 'operator', 'webchat', 'backend'
+    // client.id must be one of: 'openclaw-cli', 'openclaw-control-ui', 'openclaw-dashboard'
+    // client.mode must be one of: 'cli', 'webchat'
     // token goes in auth.token, not at params root
     const connectRequest = {
       type: 'req',
@@ -666,10 +666,10 @@ export class GatewayClient extends EventEmitter {
         minProtocol: 3,
         maxProtocol: 3,
         client: {
-          id: 'cli',
-          version: '1.0.26',
+          id: 'openclaw-cli',
+          version: '1.0.27',
           platform: process.platform,
-          mode: 'operator',
+          mode: 'cli',
         },
         role: 'operator',
         scopes: ['operator.admin', 'operator.approvals'],
