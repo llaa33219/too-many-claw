@@ -428,7 +428,7 @@ export class OpenClawDaemon extends EventEmitter {
 
     this.botMessageSuppressor.on('bot_message_detected', async (detected: DetectedBotMessage) => {
       // Strip agent tags before hashing so dedup matches the Gateway path (which stores stripped content)
-      const strippedContent = detected.content.replace(/<[a-z][a-z0-9-]*>([\s\S]*?)<\/[a-z][a-z0-9-]*>/g, '$1').trim();
+      const strippedContent = detected.content.replace(/<[a-z][a-z0-9-]*>([\s\S]*?)<\/[a-z][a-z0-9-]*>/gi, '$1').trim();
       const contentHash = this.hashForDedup(strippedContent);
       const now = Date.now();
 

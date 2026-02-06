@@ -45,7 +45,7 @@ export class AgentMessageParser {
       return [];
     }
 
-    const tagPattern = /<([a-z][a-z0-9-]*)>([\s\S]*?)<\/\1>/g;
+    const tagPattern = /<([a-z][a-z0-9-]*)>([\s\S]*?)<\/\1>/gi;
     const sections: AgentSection[] = [];
     let lastIndex = 0;
     let match: RegExpExecArray | null;
@@ -59,7 +59,7 @@ export class AgentMessageParser {
         }
       }
 
-      const tagName = match[1];
+      const tagName = match[1].toLowerCase();
       const tagContent = match[2].trim();
       const agent = this.agentById.get(tagName);
 
