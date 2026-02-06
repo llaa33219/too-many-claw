@@ -22,8 +22,16 @@ export interface BotMessageSuppressorConfig {
 export interface BotMessageSuppressorEvents {
   'ready': (botId: string, botTag: string) => void;
   'suppressed': (messageId: string, channelId: string) => void;
+  'bot_message_detected': (detected: DetectedBotMessage) => void;
   'error': (error: Error, context: string) => void;
   'disconnect': () => void;
+}
+
+export interface DetectedBotMessage {
+  messageId: string;
+  content: string;
+  channelId: string;
+  deleteMessage: () => Promise<void>;
 }
 
 export class BotMessageSuppressor extends EventEmitter {
@@ -161,7 +169,32 @@ export class BotMessageSuppressor extends EventEmitter {
 
     this.addToProcessedCache(message.id);
 
-    // Small delay to ensure the message was fully delivered
+    // Relay mode: emit event for external handling (daemon sends via webhook then deletes)
+    if (this.listenerCount('bot_message_detected') > 0) {
+      const detected: DetectedBotMessage = {
+        messageId: message.id,
+        content: message.content,
+        channelId: message.channel.id,
+        deleteMessage: async () => {
+          if (this.config.deleteDelay > 0) {
+            await this.delay(this.config.deleteDelay);
+          }
+          try {
+            await message.delete();
+            this.emit('suppressed', message.id, message.channel.id);
+          } catch (error) {
+            const err = error as { code?: number; message?: string };
+            if (err.code !== 10008) {
+              this.emit('error', error instanceof Error ? error : new Error('Delete failed'), `suppress ${message.id}`);
+            }
+          }
+        },
+      };
+      this.emit('bot_message_detected', detected);
+      return;
+    }
+
+    // Auto-suppress mode: delete immediately
     if (this.config.deleteDelay > 0) {
       await this.delay(this.config.deleteDelay);
     }

@@ -26,14 +26,49 @@ import { registerTmcAgents } from './scripts/postinstall.js';
 
 const PID_FILE_PATH = path.join(os.homedir(), '.openclaw', 'tmc-daemon.pid');
 const SYSTEMD_SERVICE_PATH = '/etc/systemd/system/tmc-daemon.service';
+const HEALTH_FILE_PATH = path.join(os.homedir(), '.openclaw', 'tmc-daemon.health');
+
+function writeHealthFile(): void {
+  const dir = path.dirname(HEALTH_FILE_PATH);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  fs.writeFileSync(HEALTH_FILE_PATH, JSON.stringify({
+    timestamp: new Date().toISOString(),
+    pid: process.pid,
+  }), 'utf8');
+}
+
+function readHealthFile(): { timestamp: string; pid: number } | null {
+  try {
+    if (fs.existsSync(HEALTH_FILE_PATH)) {
+      return JSON.parse(fs.readFileSync(HEALTH_FILE_PATH, 'utf8'));
+    }
+  } catch {
+    // Ignore
+  }
+  return null;
+}
 
 /**
  * Get the path to the TMC executable
  */
 function getTmcBinaryPath(): string {
-  // Try to find the tmc binary
+  // Primary: use the currently running script (most reliable)
+  if (process.argv[1] && fs.existsSync(process.argv[1])) {
+    return process.argv[1];
+  }
+  
+  // Fallback: which command
   try {
-    const npmGlobalBin = execSync('npm bin -g', { encoding: 'utf8' }).trim();
+    return execSync('which tmc', { encoding: 'utf8' }).trim();
+  } catch {
+    // Ignore
+  }
+  
+  // Fallback: npm global bin
+  try {
+    const npmGlobalBin = execSync('npm bin -g 2>/dev/null', { encoding: 'utf8' }).trim();
     const tmcPath = path.join(npmGlobalBin, 'tmc');
     if (fs.existsSync(tmcPath)) {
       return tmcPath;
@@ -42,13 +77,7 @@ function getTmcBinaryPath(): string {
     // Ignore
   }
   
-  // Fallback to which command
-  try {
-    return execSync('which tmc', { encoding: 'utf8' }).trim();
-  } catch {
-    // Fallback to process.argv[1] (current script)
-    return process.argv[1];
-  }
+  return process.argv[1];
 }
 
 /**
@@ -105,7 +134,7 @@ function isProcessRunning(pid: number): boolean {
 /**
  * Get daemon status
  */
-function getDaemonStatus(): { running: boolean; pid: number | null; systemdInstalled: boolean; systemdActive: boolean } {
+function getDaemonStatus(): { running: boolean; pid: number | null; systemdInstalled: boolean; systemdActive: boolean; lastHealthCheck: string | null } {
   const pid = readPidFile();
   const running = pid !== null && isProcessRunning(pid);
   
@@ -122,7 +151,13 @@ function getDaemonStatus(): { running: boolean; pid: number | null; systemdInsta
     // Ignore
   }
   
-  return { running, pid, systemdInstalled, systemdActive };
+  // Clean up stale PID file
+  if (pid !== null && !running && !systemdActive) {
+    removePidFile();
+  }
+  
+  const health = readHealthFile();
+  return { running, pid: running ? pid : null, systemdInstalled, systemdActive, lastHealthCheck: health?.timestamp || null };
 }
 
 /**
@@ -383,9 +418,17 @@ program
       child.unref();
       if (child.pid) {
         writePidFile(child.pid);
-        console.log(chalk.green(`✓ Daemon started (PID: ${child.pid})`));
-        console.log(chalk.gray('  Check status: tmc daemon status'));
-        console.log(chalk.gray('  View logs: tmc daemon logs\n'));
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        if (isProcessRunning(child.pid)) {
+          console.log(chalk.green(`✓ Daemon started (PID: ${child.pid})`));
+          console.log(chalk.gray('  Check status: tmc daemon status'));
+          console.log(chalk.gray('  View logs: tmc daemon logs\n'));
+        } else {
+          removePidFile();
+          console.log(chalk.red('✗ Daemon failed to start (process exited immediately)'));
+          console.log(chalk.gray('  Try running in foreground to see errors:'));
+          console.log(chalk.white('  tmc daemon run\n'));
+        }
       }
     } else if (startDaemon === 'foreground') {
       console.log(chalk.cyan('Starting daemon in foreground...\n'));
@@ -798,12 +841,21 @@ daemonCommand
       
       if (child.pid) {
         writePidFile(child.pid);
-        console.log(chalk.green(`✓ Daemon started in background (PID: ${child.pid})`));
-        console.log(chalk.gray(`\nPID file: ${PID_FILE_PATH}`));
-        console.log(chalk.gray('\nUseful commands:'));
-        console.log(chalk.white('  tmc daemon status') + chalk.gray(' - Check daemon status'));
-        console.log(chalk.white('  tmc daemon stop') + chalk.gray('   - Stop the daemon'));
-        console.log(chalk.white('  tmc daemon logs') + chalk.gray('   - View daemon logs (if using systemd)\n'));
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        if (isProcessRunning(child.pid)) {
+          console.log(chalk.green(`✓ Daemon started in background (PID: ${child.pid})`));
+          console.log(chalk.gray(`\nPID file: ${PID_FILE_PATH}`));
+          console.log(chalk.gray('\nUseful commands:'));
+          console.log(chalk.white('  tmc daemon status') + chalk.gray(' - Check daemon status'));
+          console.log(chalk.white('  tmc daemon stop') + chalk.gray('   - Stop the daemon'));
+          console.log(chalk.white('  tmc daemon logs') + chalk.gray('   - View daemon logs (if using systemd)\n'));
+        } else {
+          removePidFile();
+          console.log(chalk.red('✗ Daemon failed to start (process exited immediately)'));
+          console.log(chalk.gray('  Try running in foreground to see errors:'));
+          console.log(chalk.white('  tmc daemon run\n'));
+          process.exit(1);
+        }
       } else {
         console.log(chalk.red('✗ Failed to start daemon in background\n'));
         process.exit(1);
@@ -868,6 +920,7 @@ daemonCommand
     // Connection event handlers
     daemon.on('connected', () => {
       statusSpinner.succeed('Connected to OpenClaw Gateway');
+      writeHealthFile();
       console.log(chalk.green('\n🦞 Daemon is now running!'));
       console.log(chalk.gray('  Listening for agent responses...'));
       if (process.env.TMC_DAEMON_CHILD !== '1') {
@@ -951,6 +1004,7 @@ daemonCommand
 
       await daemon.stop();
       removePidFile();
+      try { fs.unlinkSync(HEALTH_FILE_PATH); } catch { /* ignore */ }
       console.log(chalk.green('Daemon stopped. Goodbye! 👋\n'));
       process.exit(0);
     };
@@ -1038,12 +1092,14 @@ daemonCommand
     
     if (status.running && status.pid) {
       console.log(chalk.green(`  ✓ Daemon is running (PID: ${status.pid})`));
-    } else if (status.pid) {
-      console.log(chalk.red(`  ✗ Daemon is not running (stale PID file: ${status.pid})`));
-      console.log(chalk.gray('    Cleaning up stale PID file...'));
-      removePidFile();
     } else {
       console.log(chalk.gray('  ○ Daemon is not running'));
+    }
+    
+    if (status.lastHealthCheck) {
+      const lastCheck = new Date(status.lastHealthCheck);
+      const ago = formatUptime(Date.now() - lastCheck.getTime());
+      console.log(chalk.gray(`  Last Gateway connection: ${ago} ago`));
     }
     
     console.log(chalk.yellow('\n━━━ Systemd Service ━━━\n'));

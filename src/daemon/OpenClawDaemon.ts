@@ -7,10 +7,11 @@ import { EventEmitter } from 'events';
 import { execSync } from 'child_process';
 import { GatewayClient, ConnectionState, AgentResponseMessage, GatewayMessage, ChannelMessage, extractTextContent } from '../openclaw/GatewayClient.js';
 import { WebhookManager } from '../discord/WebhookManager.js';
-import { BotMessageSuppressor } from '../discord/BotMessageSuppressor.js';
+import { BotMessageSuppressor, DetectedBotMessage } from '../discord/BotMessageSuppressor.js';
 import { ConfigManager } from '../config/ConfigManager.js';
 import { AgentMapper } from './AgentMapper.js';
 import { AgentDefinition } from '../types/index.js';
+import { AGENT_DEFINITIONS } from '../agents/definitions.js';
 
 /** Daemon configuration */
 export interface DaemonConfig {
@@ -112,6 +113,12 @@ export class OpenClawDaemon extends EventEmitter {
   // Dedup: track recently sent webhook messages to prevent double-sends
   private recentlySent: Map<string, number> = new Map();
   private readonly DEDUP_TTL = 10000; // 10 seconds
+  
+  // Content-only dedup: contentHash → timestamp (for relay to check if already forwarded)
+  private recentContentHashes: Map<string, number> = new Map();
+  // Agent hints from Gateway events: contentHash → { agentId, timestamp }
+  private agentHints: Map<string, { agentId: string; timestamp: number }> = new Map();
+  private readonly AGENT_HINT_TTL = 30000; // 30 seconds
 
   constructor(config: DaemonConfig = {}) {
     super();
@@ -261,7 +268,8 @@ export class OpenClawDaemon extends EventEmitter {
   private setupEventHandlers(): void {
     // Connection events
     this.gatewayClient.on('connect', () => {
-      this.forceLog('Connected to OpenClaw Gateway');
+      const hasWebhook = this.webhookManager.hasBaseWebhook() || this.webhookManager.getRegisteredAgents().length > 0;
+      this.forceLog(`Connected to OpenClaw Gateway (webhook: ${hasWebhook ? '✓' : '✗ NOT CONFIGURED'})`);
       this.openclawDetected = true;
       this.emit('connected');
       this.emit('openclaw_detected');
@@ -348,7 +356,7 @@ export class OpenClawDaemon extends EventEmitter {
     
     // Warning if no webhooks at all
     if (!webhooks['base'] && agentWebhooks.length === 0) {
-      this.log('No webhooks configured - messages will not be forwarded to Discord');
+      this.forceLog('⚠ No webhooks configured — messages will not be forwarded to Discord. Run `tmc setup`');
     }
   }
 
@@ -392,11 +400,70 @@ export class OpenClawDaemon extends EventEmitter {
 
     try {
       await this.botMessageSuppressor.connect();
-      this.forceLog('Bot message suppression enabled — duplicate bot messages will be deleted');
+      this.setupRelayHandler();
+      this.forceLog('Bot message suppression enabled — webhook relay active');
     } catch (error) {
       this.forceLog(`Failed to connect bot message suppressor: ${error instanceof Error ? error.message : 'Unknown error'}`);
       this.botMessageSuppressor = null;
     }
+  }
+
+  /**
+   * Set up relay handler on the Suppressor.
+   * When the Suppressor detects an OpenClaw bot message, this handler:
+   *   1. Checks if the content was already forwarded via webhook (Gateway path)
+   *   2. If not, resolves the agent and forwards via webhook (relay fallback)
+   *   3. Deletes the original bot message
+   */
+  private setupRelayHandler(): void {
+    if (!this.botMessageSuppressor) return;
+
+    this.botMessageSuppressor.on('bot_message_detected', async (detected: DetectedBotMessage) => {
+      const contentHash = this.hashForDedup(detected.content);
+      const now = Date.now();
+
+      const lastSentAt = this.recentContentHashes.get(contentHash);
+      if (lastSentAt && now - lastSentAt < this.DEDUP_TTL) {
+        this.log('Relay: content already forwarded via Gateway, just deleting bot message');
+      } else {
+        // Resolve agent: Gateway hint → content parsing → default
+        const hint = this.agentHints.get(contentHash);
+        const hintedAgent = hint ? this.agentMapper.resolve(hint.agentId) : null;
+        const agent = hintedAgent
+          || this.resolveAgentFromContent(detected.content)
+          || this.agentMapper.getDefaultAgent();
+
+        this.forceLog(`📨 Relay: forwarding bot message as ${agent.emoji} ${agent.name}`);
+        await this.forwardToWebhook(agent, detected.content);
+      }
+
+      // Delete the original bot message (suppression count tracked by 'suppressed' event)
+      try {
+        await detected.deleteMessage();
+      } catch (error) {
+        this.log(`Relay: failed to delete bot message: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      }
+    });
+  }
+
+  /**
+   * Try to resolve an agent from message content.
+   * OpenClaw may prefix messages with agent emoji/name.
+   */
+  private resolveAgentFromContent(content: string): AgentDefinition | null {
+    const trimmed = content.trim();
+    for (const agent of AGENT_DEFINITIONS) {
+      if (trimmed.startsWith(agent.emoji)) {
+        return agent;
+      }
+      if (trimmed.startsWith(`${agent.name}:`) || trimmed.startsWith(`${agent.name} `)) {
+        return agent;
+      }
+      if (trimmed.startsWith(`[${agent.name}]`) || trimmed.startsWith(`**${agent.name}**`)) {
+        return agent;
+      }
+    }
+    return null;
   }
 
   /**
@@ -457,7 +524,10 @@ export class OpenClawDaemon extends EventEmitter {
 
     const agent = this.agentMapper.resolve(agentIdentifier) || this.agentMapper.getDefaultAgent();
     
-    this.log(`Agent response from ${agent.name}: ${content.substring(0, 100)}...`);
+    // Store agent hint for relay fallback path
+    this.agentHints.set(this.hashForDedup(content), { agentId: agent.id, timestamp: Date.now() });
+    
+    this.forceLog(`📥 Gateway: agent response from ${agent.emoji} ${agent.name}`);
     this.emit('message_received', agent.id, content);
     
     await this.forwardToWebhook(agent, content);
@@ -586,6 +656,7 @@ export class OpenClawDaemon extends EventEmitter {
     if (buffered && buffered.content && buffered.content.trim()) {
       const agent = this.agentMapper.resolve(buffered.agentId) || this.agentMapper.getDefaultAgent();
       
+      this.agentHints.set(this.hashForDedup(buffered.content), { agentId: agent.id, timestamp: Date.now() });
       this.log(`Flushing buffer for ${agent.name}: ${buffered.content.length} chars`);
       this.emit('message_received', agent.id, buffered.content);
       
@@ -605,6 +676,7 @@ export class OpenClawDaemon extends EventEmitter {
     
     if (content && content.trim()) {
       const agent = this.agentMapper.resolve(agentIdentifier) || this.agentMapper.getDefaultAgent();
+      this.agentHints.set(this.hashForDedup(content), { agentId: agent.id, timestamp: Date.now() });
       this.log(`End message content for ${agent.name}: ${content.length} chars`);
       this.emit('message_received', agent.id, content);
       
@@ -636,18 +708,31 @@ export class OpenClawDaemon extends EventEmitter {
    */
   private async forwardToWebhook(agent: AgentDefinition, content: string): Promise<void> {
     if (!this.webhookManager.canSend(agent.id)) {
-      this.log(`No webhook available for agent: ${agent.id}`);
+      this.forceLog(`⚠ No webhook available for agent: ${agent.id} — run 'tmc setup' to configure`);
       return;
     }
 
-    // Dedup: skip if we recently sent the same content for the same agent
-    const dedupKey = `${agent.id}:${this.hashForDedup(content)}`;
+    const contentHash = this.hashForDedup(content);
     const now = Date.now();
+
+    // Content-only dedup: skip if same content was recently sent (by any agent/path)
+    const lastContentSent = this.recentContentHashes.get(contentHash);
+    if (lastContentSent && now - lastContentSent < this.DEDUP_TTL) {
+      this.log(`Dedup: content already sent via another path, skipping`);
+      return;
+    }
+
+    // Agent-specific dedup: skip if same agent sent same content recently
+    const dedupKey = `${agent.id}:${contentHash}`;
     const lastSent = this.recentlySent.get(dedupKey);
     if (lastSent && now - lastSent < this.DEDUP_TTL) {
       this.log(`Dedup: skipping duplicate webhook send for ${agent.name}`);
       return;
     }
+
+    // Set content hash optimistically BEFORE sending to prevent race conditions
+    // between Gateway path and Relay path (both check this map before sending)
+    this.recentContentHashes.set(contentHash, now);
 
     try {
       await this.webhookManager.sendAsAgentDirect(agent, content);
@@ -656,8 +741,9 @@ export class OpenClawDaemon extends EventEmitter {
       this.emit('message_forwarded', agent.id, content);
       this.log(`Forwarded message from ${agent.emoji} ${agent.name}`);
     } catch (error) {
+      this.recentContentHashes.delete(contentHash); // rollback on failure to allow retry
       this.webhookErrors++;
-      this.log(`Failed to forward message: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      this.forceLog(`✗ Webhook send failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
       this.emit('error', error instanceof Error ? error : new Error('Webhook send failed'));
     }
   }
@@ -678,6 +764,16 @@ export class OpenClawDaemon extends EventEmitter {
     for (const [key, timestamp] of this.recentlySent) {
       if (now - timestamp > this.DEDUP_TTL) {
         this.recentlySent.delete(key);
+      }
+    }
+    for (const [key, timestamp] of this.recentContentHashes) {
+      if (now - timestamp > this.DEDUP_TTL) {
+        this.recentContentHashes.delete(key);
+      }
+    }
+    for (const [key, hint] of this.agentHints) {
+      if (now - hint.timestamp > this.AGENT_HINT_TTL) {
+        this.agentHints.delete(key);
       }
     }
   }

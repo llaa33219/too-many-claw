@@ -14,7 +14,7 @@ export { SOUL_TEMPLATES, getSoulTemplate } from './agents/souls/index.js';
 export { Agent, Orchestrator, StateManager, MessageRouter } from './core/index.js';
 
 // Discord integration
-export { WebhookManager, DiscordAdapter, BotMessageSuppressor } from './discord/index.js';
+export { WebhookManager, DiscordAdapter, BotMessageSuppressor, DetectedBotMessage } from './discord/index.js';
 
 // Simulation
 export { TerminalAdapter, TerminalUI } from './simulation/index.js';
