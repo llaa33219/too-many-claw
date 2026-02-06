@@ -367,55 +367,70 @@ export async function uninstallPlugin(): Promise<boolean> {
 
 /**
  * Configure the plugin in openclaw.json
- * Sets up the tmc-webhook channel and configures Discord to route replies through it
+ * Note: We no longer try to modify OpenClaw's Discord output settings.
+ * Instead, TMC daemon uses message interception (delete bot message + resend via webhook).
+ * This function now just cleans up any invalid config keys we may have added previously.
  */
 export async function configurePlugin(webhookUrl: string): Promise<boolean> {
   try {
     const openclawConfigPath = path.join(OPENCLAW_DIR, 'openclaw.json');
     
-    let config: Record<string, unknown> = {};
-    if (await fs.pathExists(openclawConfigPath)) {
-      config = await fs.readJson(openclawConfigPath);
+    if (!await fs.pathExists(openclawConfigPath)) {
+      return true; // Nothing to configure
     }
     
-    // Add tmc-webhook channel configuration
-    if (!config.channels) {
-      config.channels = {};
+    const config: Record<string, unknown> = await fs.readJson(openclawConfigPath);
+    let modified = false;
+    
+    // Clean up invalid top-level keys we may have added before
+    if (config.discord) {
+      delete config.discord;
+      modified = true;
+    }
+    if (config.defaults) {
+      delete config.defaults;
+      modified = true;
     }
     
-    const channels = config.channels as Record<string, unknown>;
-    
-    // Configure tmc-webhook channel with the webhook URL
-    channels['tmc-webhook'] = {
-      enabled: true,
-      webhookUrl,
-    };
-    
-    // Configure Discord to NOT send messages directly
-    // Messages will be routed through tmc-webhook instead
-    if (!channels.discord) {
-      channels.discord = {};
+    // Clean up invalid channel configurations
+    if (config.channels) {
+      const channels = config.channels as Record<string, unknown>;
+      
+      // Remove tmc-webhook channel (no longer used)
+      if (channels['tmc-webhook']) {
+        delete channels['tmc-webhook'];
+        modified = true;
+      }
+      
+      // Clean up discord channel invalid keys
+      if (channels.discord) {
+        const discordChannel = channels.discord as Record<string, unknown>;
+        if (discordChannel.actions) {
+          delete discordChannel.actions;
+          modified = true;
+        }
+        if (discordChannel.replyToMode) {
+          delete discordChannel.replyToMode;
+          modified = true;
+        }
+        // Remove empty discord object
+        if (Object.keys(discordChannel).length === 0) {
+          delete channels.discord;
+          modified = true;
+        }
+      }
+      
+      // Remove empty channels object
+      if (Object.keys(channels).length === 0) {
+        delete config.channels;
+        modified = true;
+      }
     }
-    const discordChannel = channels.discord as Record<string, unknown>;
     
-    // Disable direct message sending from Discord channel
-    // This makes Discord input-only, with output going through tmc-webhook
-    discordChannel.replyToMode = 'off';
-    if (!discordChannel.actions) {
-      discordChannel.actions = {};
+    if (modified) {
+      await fs.writeJson(openclawConfigPath, config, { spaces: 2 });
     }
-    const discordActions = discordChannel.actions as Record<string, unknown>;
-    discordActions.messages = false;
     
-    // Set default reply channel to tmc-webhook
-    // This routes all replies through our webhook channel
-    if (!config.defaults) {
-      config.defaults = {};
-    }
-    const defaults = config.defaults as Record<string, unknown>;
-    defaults.replyChannel = 'tmc-webhook';
-    
-    await fs.writeJson(openclawConfigPath, config, { spaces: 2 });
     return true;
   } catch {
     return false;

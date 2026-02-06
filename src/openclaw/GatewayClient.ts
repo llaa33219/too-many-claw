@@ -139,6 +139,7 @@ export interface GatewayClientEvents {
   'agent_start': (message: GatewayMessage) => void;
   'agent_end': (message: AgentResponseMessage) => void;
   'channel_message': (message: ChannelMessage) => void;
+  'message_sent': (message: GatewayMessage) => void;
   'shutdown': () => void;
   'state_change': (state: ConnectionState) => void;
 }
@@ -415,6 +416,13 @@ export class GatewayClient extends EventEmitter {
 
       case GatewayMessageType.ERROR:
         this.emit('error', new Error((message as any).error || 'Unknown gateway error'));
+        break;
+
+      case GatewayMessageType.MESSAGE_SENT:
+      case 'sent':
+      case 'delivered':
+        // Bot sent a message to Discord - emit for interception
+        this.emit('message_sent', message);
         break;
 
       default:

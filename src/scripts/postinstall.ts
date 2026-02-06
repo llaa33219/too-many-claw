@@ -116,51 +116,47 @@ async function mergeOpenclawConfig(configPath: string): Promise<{ newlyAdded: st
     allow: AGENT_DEFINITIONS.map(a => a.id),
   };
 
-  // Disable OpenClaw's direct Discord responses - TMC uses webhooks instead
-  // This prevents duplicate messages (OpenClaw bot + TMC webhook)
-  if (!config.channels) {
-    config.channels = {};
+  // Clean up any deprecated/invalid top-level keys that may have been added previously
+  // OpenClaw only accepts known keys at root level
+  if (config.discord) {
+    delete config.discord;
+    webhookModeConfigured = true;
   }
-  const channels = config.channels as Record<string, unknown>;
-  if (!channels.discord) {
-    channels.discord = {};
-  }
-  const discordChannel = channels.discord as Record<string, unknown>;
-  
-  // Set replyToMode to 'off' to disable reply threading
-  if (discordChannel.replyToMode !== 'off') {
-    discordChannel.replyToMode = 'off';
+  if (config.defaults) {
+    delete config.defaults;
     webhookModeConfigured = true;
   }
   
-  // Disable Discord message sending action - this is the key setting!
-  // This prevents OpenClaw bot from sending messages directly to Discord
-  // Only TMC webhooks will respond
-  // 
-  // We set this in two places to ensure it works:
-  // 1. channels.discord.actions.messages - channel-level setting
-  // 2. discord.actions.messages - tool/skill-level setting (top-level)
-  if (!discordChannel.actions) {
-    discordChannel.actions = {};
-  }
-  const discordActions = discordChannel.actions as Record<string, unknown>;
-  if (discordActions.messages !== false) {
-    discordActions.messages = false;
-    webhookModeConfigured = true;
-  }
-
-  // Also set at top-level discord.actions for tool/skill configuration
-  if (!config.discord) {
-    config.discord = {};
-  }
-  const discordRoot = config.discord as Record<string, unknown>;
-  if (!discordRoot.actions) {
-    discordRoot.actions = {};
-  }
-  const discordRootActions = discordRoot.actions as Record<string, unknown>;
-  if (discordRootActions.messages !== false) {
-    discordRootActions.messages = false;
-    webhookModeConfigured = true;
+  // Clean up channels.discord if it has invalid nested keys
+  // Note: We now use TMC daemon's message interception instead of trying to disable
+  // OpenClaw's Discord output (which doesn't work as expected)
+  if (config.channels) {
+    const channels = config.channels as Record<string, unknown>;
+    if (channels.discord) {
+      const discordChannel = channels.discord as Record<string, unknown>;
+      // Remove invalid keys we may have added before
+      if (discordChannel.actions) {
+        delete discordChannel.actions;
+        webhookModeConfigured = true;
+      }
+      if (discordChannel.replyToMode) {
+        delete discordChannel.replyToMode;
+        webhookModeConfigured = true;
+      }
+      // Remove empty discord object if nothing left
+      if (Object.keys(discordChannel).length === 0) {
+        delete channels.discord;
+      }
+    }
+    // Remove tmc-webhook channel config (we don't use custom channel plugin anymore)
+    if (channels['tmc-webhook']) {
+      delete channels['tmc-webhook'];
+      webhookModeConfigured = true;
+    }
+    // Remove empty channels object if nothing left
+    if (Object.keys(channels).length === 0) {
+      delete config.channels;
+    }
   }
 
   if (!config.agents) {
