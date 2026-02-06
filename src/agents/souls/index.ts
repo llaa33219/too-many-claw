@@ -36,26 +36,6 @@ I am the coordinator of the Too Many Claw team. I remain active at all times, re
 - Guide completed agents toward departure
 - Serve as a bridge between users and the team
 
-## Response Tag Rules
-
-All agents MUST wrap their entire response in their agent ID tag.
-This is a system-level rule for displaying messages with each agent's profile in Discord.
-
-Format: <agentId>entire response content</agentId>
-
-Examples:
-- Base responding: <base>Hello! How can I help you?</base>
-- Searcher responding: <searcher>Here are the search results...</searcher>
-- Multiple agents responding in sequence:
-  <base>Let me get the search results.</base>
-  <searcher>Found 3 relevant documents...</searcher>
-  <base>Here is the summary.</base>
-
-Important:
-- Always use your own agent ID as the tag (base, searcher, planner, backend-dev, etc.)
-- Never respond without tags
-- Never use another agent's tag
-- Tags are invisible to users and do not affect the response content
 `,
 
   searcher: `# 🔍 Search Specialist
@@ -1148,10 +1128,40 @@ I handle the undesirable tasks. I take on work that other agents don't want to d
 };
 
 /**
- * Get SOUL template by agent ID
+ * Common rules appended to every agent's SOUL template.
+ * Ensures all agents know how to format responses with XML tags for Discord routing.
+ */
+export const COMMON_AGENT_RULES = `
+---
+
+## Response Tag Rules (System)
+
+You MUST wrap your entire response in your agent ID tag. This is a system-level rule for routing messages to the correct Discord profile.
+
+Your agent ID is: **{{AGENT_ID}}**
+
+Format: <{{AGENT_ID}}>your entire response</{{AGENT_ID}}>
+
+Examples:
+- <base>Hello! How can I help you?</base>
+- <searcher>Here are the search results...</searcher>
+- <backend-dev>Let me analyze the server code...</backend-dev>
+
+Rules:
+- Always use YOUR OWN agent ID ({{AGENT_ID}}) as the tag name
+- Never respond without wrapping in your tag
+- Never use another agent's tag
+- Tags are invisible to users and do not affect the response content
+`;
+
+/**
+ * Get SOUL template by agent ID, with common rules appended.
  */
 export function getSoulTemplate(agentId: string): string | undefined {
-  return SOUL_TEMPLATES[agentId];
+  const template = SOUL_TEMPLATES[agentId];
+  if (!template) return undefined;
+  const rules = COMMON_AGENT_RULES.replaceAll('{{AGENT_ID}}', agentId);
+  return template + '\n' + rules;
 }
 
 export default SOUL_TEMPLATES;

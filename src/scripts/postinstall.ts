@@ -8,7 +8,7 @@ import fs from 'fs-extra';
 import path from 'path';
 import os from 'os';
 import { AGENT_DEFINITIONS } from '../agents/definitions.js';
-import { SOUL_TEMPLATES } from '../agents/souls/index.js';
+import { getSoulTemplate, COMMON_AGENT_RULES } from '../agents/souls/index.js';
 
 const OPENCLAW_DIR = path.join(os.homedir(), '.openclaw');
 
@@ -80,7 +80,7 @@ ${agent.role}
 ## Interaction Rules
 - Respond when summoned via @mention
 - Exit when work is complete
-`;
+` + '\n' + COMMON_AGENT_RULES.replaceAll('{{AGENT_ID}}', agent.id);
 }
 
 /**
@@ -213,12 +213,10 @@ export async function registerTmcAgents(): Promise<AgentRegistrationResult> {
       await fs.ensureDir(workspacePath);
 
       const soulPath = path.join(workspacePath, 'SOUL.md');
-      if (!await fs.pathExists(soulPath)) {
-        const soulContent = SOUL_TEMPLATES[agent.id] || generateBasicSoul(agent);
-        await fs.writeFile(soulPath, soulContent, 'utf-8');
-        if (!existed) {
-          result.workspacesCreated++;
-        }
+      const soulContent = getSoulTemplate(agent.id) || generateBasicSoul(agent);
+      await fs.writeFile(soulPath, soulContent, 'utf-8');
+      if (!existed) {
+        result.workspacesCreated++;
       }
     }
 
