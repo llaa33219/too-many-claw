@@ -52,6 +52,11 @@ export class BotMessageMonitor extends EventEmitter {
   private processedMessages: Set<string> = new Set();
   private readonly MAX_PROCESSED_CACHE = 200;
 
+  // Pending messages from Gateway events (content hash -> agentId)
+  // This allows us to match Discord messages to their agent
+  private pendingMessages: Map<string, { agentId: string; timestamp: number }> = new Map();
+  private readonly PENDING_MESSAGE_TTL = 30000; // 30 seconds TTL
+
   constructor(
     config: BotMessageMonitorConfig,
     webhookManager: WebhookManager,
@@ -154,6 +159,91 @@ export class BotMessageMonitor extends EventEmitter {
   }
 
   /**
+   * Register a pending message from Gateway event
+   * This allows BotMessageMonitor to know which agent sent the message
+   * @param agentId - The agent ID from Gateway event
+   * @param content - The message content (will be hashed for lookup)
+   */
+  registerPendingMessage(agentId: string, content: string): void {
+    if (!content || !agentId) return;
+    
+    const hash = this.hashContent(content);
+    this.pendingMessages.set(hash, {
+      agentId,
+      timestamp: Date.now(),
+    });
+    
+    this.log(`Registered pending message for agent ${agentId}: ${content.substring(0, 50)}...`);
+    
+    // Clean up old entries
+    this.cleanupPendingMessages();
+  }
+
+  /**
+   * Create a hash from content for lookup
+   */
+  private hashContent(content: string): string {
+    // Normalize content: trim, remove extra whitespace, lowercase
+    const normalized = content.trim().replace(/\s+/g, ' ').toLowerCase();
+    // Use first 200 chars + length as a simple hash
+    return `${normalized.substring(0, 200)}|${normalized.length}`;
+  }
+
+  /**
+   * Clean up expired pending messages
+   */
+  private cleanupPendingMessages(): void {
+    const now = Date.now();
+    for (const [hash, data] of this.pendingMessages) {
+      if (now - data.timestamp > this.PENDING_MESSAGE_TTL) {
+        this.pendingMessages.delete(hash);
+      }
+    }
+    
+    // Also limit size
+    if (this.pendingMessages.size > 100) {
+      const entries = Array.from(this.pendingMessages.entries());
+      entries.sort((a, b) => a[1].timestamp - b[1].timestamp);
+      // Remove oldest half
+      for (let i = 0; i < 50; i++) {
+        this.pendingMessages.delete(entries[i][0]);
+      }
+    }
+  }
+
+  /**
+   * Look up agent from pending messages by content
+   */
+  private lookupPendingAgent(content: string): string | null {
+    const hash = this.hashContent(content);
+    const pending = this.pendingMessages.get(hash);
+    
+    if (pending && Date.now() - pending.timestamp < this.PENDING_MESSAGE_TTL) {
+      // Remove from pending after use
+      this.pendingMessages.delete(hash);
+      this.log(`Found pending agent ${pending.agentId} for message`);
+      return pending.agentId;
+    }
+    
+    // Try partial matching for streaming/chunked messages
+    const normalizedContent = content.trim().toLowerCase();
+    for (const [pendingHash, data] of this.pendingMessages) {
+      const pendingContent = pendingHash.split('|')[0];
+      // Check if the message content starts with or contains the pending content
+      if (normalizedContent.includes(pendingContent.substring(0, 100)) ||
+          pendingContent.includes(normalizedContent.substring(0, 100))) {
+        if (Date.now() - data.timestamp < this.PENDING_MESSAGE_TTL) {
+          this.pendingMessages.delete(pendingHash);
+          this.log(`Found pending agent ${data.agentId} via partial match`);
+          return data.agentId;
+        }
+      }
+    }
+    
+    return null;
+  }
+
+  /**
    * Get the bot's user ID
    */
   getBotUserId(): string | null {
@@ -229,10 +319,27 @@ export class BotMessageMonitor extends EventEmitter {
     this.log(`Intercepting bot message ${message.id}: ${message.content.substring(0, 50)}...`);
 
     try {
-      // Extract agent info from message content
-      const { agent, cleanContent } = this.extractAgentFromContent(message.content);
+      // First, try to find agent from pending Gateway messages
+      const pendingAgentId = this.lookupPendingAgent(message.content);
+      
+      let agent: AgentDefinition;
+      let cleanContent: string;
+      
+      if (pendingAgentId) {
+        // Found agent from Gateway event
+        agent = this.agentMapper.resolve(pendingAgentId) || this.agentMapper.getDefaultAgent();
+        cleanContent = message.content; // Keep content as-is, no need to strip agent prefix
+        this.log(`Using agent ${agent.id} from Gateway event`);
+      } else {
+        // Fallback: try to extract agent from message content
+        const extracted = this.extractAgentFromContent(message.content);
+        agent = extracted.agent;
+        cleanContent = extracted.cleanContent;
+        this.log(`Using agent ${agent.id} from content extraction (fallback)`);
+      }
       
       this.emit('intercepted', message.id, message.channel.id, agent.id);
+      this.forceLog(`🦀 Intercepted message → ${agent.emoji} ${agent.name}`);
 
       // Wait a small delay to ensure the message is fully processed
       if (this.config.deleteDelay > 0) {
@@ -253,7 +360,7 @@ export class BotMessageMonitor extends EventEmitter {
       await this.sendViaWebhook(agent, cleanContent);
       this.emit('resent', agent.id, cleanContent);
 
-      this.log(`Successfully intercepted and resent message as ${agent.emoji} ${agent.name}`);
+      this.forceLog(`✅ Resent as ${agent.emoji} ${agent.name}: ${cleanContent.substring(0, 50)}...`);
     } catch (error) {
       const err = error instanceof Error ? error : new Error('Unknown error');
       this.emit('error', err, `handleMessage for ${message.id}`);

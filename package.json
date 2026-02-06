@@ -1,6 +1,6 @@
 {
   "name": "too-many-claw",
-  "version": "1.0.20",
+  "version": "1.0.21",
   "description": "OpenClaw extension with 35 AI agents that collaborate via Discord",
   "type": "module",
   "main": "dist/index.js",

@@ -280,10 +280,14 @@ export class OpenClawDaemon extends EventEmitter {
     });
 
     this.gatewayClient.on('agent_response', (message: AgentResponseMessage) => {
+      // Register the message with BotMessageMonitor before OpenClaw sends it to Discord
+      this.registerPendingMessageForMonitor(message);
       this.handleAgentResponse(message);
     });
 
     this.gatewayClient.on('agent_delta', (message: AgentResponseMessage) => {
+      // Don't register deltas - they are partial content that won't match the final Discord message
+      // Instead, we register the accumulated buffer content in handleAgentEnd
       this.handleAgentDelta(message);
     });
 
@@ -292,6 +296,8 @@ export class OpenClawDaemon extends EventEmitter {
     });
 
     this.gatewayClient.on('agent_end', (message: AgentResponseMessage) => {
+      // Register the final message as well
+      this.registerPendingMessageForMonitor(message);
       this.handleAgentEnd(message);
     });
 
@@ -388,6 +394,35 @@ export class OpenClawDaemon extends EventEmitter {
     } catch (error) {
       this.forceLog(`Failed to connect bot message monitor: ${error instanceof Error ? error.message : 'Unknown error'}`);
       this.botMessageMonitor = null;
+    }
+  }
+
+  /**
+   * Register a pending message with BotMessageMonitor
+   * This allows the monitor to know which agent sent the message
+   */
+  private registerPendingMessageForMonitor(message: AgentResponseMessage): void {
+    if (!this.botMessageMonitor) return;
+    
+    const agentIdentifier = message.agentId || message.agentName || (message as any).agent || (message as any).name;
+    const agent = this.agentMapper.resolve(agentIdentifier);
+    const agentId = agent?.id || 'base';
+    
+    // Extract content
+    let content = '';
+    if (typeof message.content === 'string') {
+      content = message.content;
+    } else if (Array.isArray(message.content)) {
+      content = extractTextContent(message.content);
+    } else if (typeof message.delta === 'string') {
+      content = message.delta;
+    } else if ((message as any).text) {
+      content = (message as any).text;
+    }
+    
+    if (content && content.trim()) {
+      this.botMessageMonitor.registerPendingMessage(agentId, content);
+      this.log(`Registered pending message for ${agentId}: ${content.substring(0, 50)}...`);
     }
   }
 
@@ -534,6 +569,13 @@ export class OpenClawDaemon extends EventEmitter {
       
       this.log(`Flushing buffer for ${agent.name}: ${buffered.content.length} chars`);
       this.emit('message_received', agent.id, buffered.content);
+      
+      // Register the accumulated buffer content with BotMessageMonitor
+      // This is the full content that will match the final Discord message
+      if (this.botMessageMonitor) {
+        this.botMessageMonitor.registerPendingMessage(agent.id, buffered.content);
+        this.forceLog(`📝 Registered streaming response for ${agent.emoji} ${agent.name}`);
+      }
       
       if (!skipWebhook) {
         await this.forwardToWebhook(agent, buffered.content);
