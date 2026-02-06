@@ -10,6 +10,8 @@ import { EventEmitter } from 'events';
 export interface GatewayClientConfig {
   /** Gateway WebSocket URL (default: ws://127.0.0.1:18789) */
   url?: string;
+  /** Gateway authentication token (required for OpenClaw Gateway) */
+  gatewayToken?: string;
   /** Reconnection settings */
   reconnect?: {
     /** Whether to auto-reconnect (default: true) */
@@ -25,6 +27,8 @@ export interface GatewayClientConfig {
   heartbeatInterval?: number;
   /** Connection timeout in ms (default: 10000) */
   connectionTimeout?: number;
+  /** Enable verbose logging */
+  verbose?: boolean;
 }
 
 /** Gateway message types */
@@ -146,6 +150,7 @@ export interface GatewayClientEvents {
 
 const DEFAULT_CONFIG: Required<GatewayClientConfig> = {
   url: 'ws://127.0.0.1:18789',
+  gatewayToken: '',
   reconnect: {
     enabled: true,
     maxAttempts: 10,
@@ -154,6 +159,7 @@ const DEFAULT_CONFIG: Required<GatewayClientConfig> = {
   },
   heartbeatInterval: 30000,
   connectionTimeout: 10000,
+  verbose: false,
 };
 
 /**
@@ -362,6 +368,12 @@ export class GatewayClient extends EventEmitter {
 
     // Emit generic message event
     this.emit('message', message);
+
+    // Handle OpenClaw Gateway connect.challenge event
+    if (message.type === 'event' && (message as any).event === 'connect.challenge') {
+      this.handleConnectChallenge(message);
+      return;
+    }
 
     // First, check for OpenClaw role-based messages (no 'type' field)
     const roleBasedMessage = message as AgentResponseMessage;
@@ -620,6 +632,50 @@ export class GatewayClient extends EventEmitter {
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
+    }
+  }
+
+  /**
+   * Handle OpenClaw Gateway connect.challenge event
+   * Responds with authentication token to complete connection handshake
+   */
+  private handleConnectChallenge(message: GatewayMessage): void {
+    const payload = (message as any).payload || {};
+    const nonce = payload.nonce;
+    const ts = payload.ts;
+
+    this.log(`Received connect.challenge (nonce: ${nonce?.substring(0, 8)}...)`);
+
+    if (!this.config.gatewayToken) {
+      this.log('Warning: No gateway token configured, authentication may fail');
+    }
+
+    // Send connect response with token and nonce
+    const connectResponse = {
+      type: 'connect',
+      token: this.config.gatewayToken,
+      nonce: nonce,
+      ts: ts,
+      client: {
+        name: 'too-many-claw',
+        version: '1.0.0',
+      },
+    };
+
+    const sent = this.send(connectResponse as GatewayMessage);
+    if (sent) {
+      this.log('Sent connect response with authentication token');
+    } else {
+      this.log('Failed to send connect response');
+    }
+  }
+
+  /**
+   * Log message if verbose mode is enabled
+   */
+  private log(message: string): void {
+    if (this.config.verbose) {
+      console.log(`[GatewayClient] ${message}`);
     }
   }
 }

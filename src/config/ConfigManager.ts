@@ -47,6 +47,10 @@ export interface OpenClawDiscordConfig {
 
 export interface OpenClawGatewayConfig {
   discord?: OpenClawDiscordConfig;
+  /** Gateway authentication token */
+  token?: string;
+  /** Gateway password (alternative to token) */
+  password?: string;
 }
 
 /**
@@ -647,6 +651,30 @@ export class ConfigManager {
    */
   getOpenClawConfigPath(): string {
     return this.openclawConfigPath;
+  }
+
+  /**
+   * Get the OpenClaw Gateway authentication token
+   * First checks environment variable OPENCLAW_GATEWAY_TOKEN,
+   * then falls back to openclaw.json gateway.token or gateway.password
+   */
+  getGatewayToken(): string | undefined {
+    // First check environment variable
+    const envToken = process.env.OPENCLAW_GATEWAY_TOKEN;
+    if (envToken) {
+      return envToken;
+    }
+
+    // Fall back to openclaw.json
+    const config = this.readOpenClawConfig();
+    if (config?.gateway?.token) {
+      return config.gateway.token;
+    }
+    if (config?.gateway?.password) {
+      return config.gateway.password;
+    }
+
+    return undefined;
   }
 
   // ============================================
