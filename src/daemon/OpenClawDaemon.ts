@@ -5,13 +5,16 @@
 
 import { EventEmitter } from 'events';
 import { execSync } from 'child_process';
-import { GatewayClient, ConnectionState, AgentResponseMessage, GatewayMessage, ChannelMessage, extractTextContent } from '../openclaw/GatewayClient.js';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
+import { GatewayClient, ConnectionState, AgentResponseMessage, GatewayMessage, ChannelMessage, extractTextContent, parseSessionKey } from '../openclaw/GatewayClient.js';
 import { WebhookManager } from '../discord/WebhookManager.js';
 import { BotMessageSuppressor, DetectedBotMessage } from '../discord/BotMessageSuppressor.js';
 import { ConfigManager } from '../config/ConfigManager.js';
 import { AgentMapper } from './AgentMapper.js';
+import { AgentMessageParser } from './AgentMessageParser.js';
 import { AgentDefinition } from '../types/index.js';
-import { AGENT_DEFINITIONS } from '../agents/definitions.js';
 
 /** Daemon configuration */
 export interface DaemonConfig {
@@ -86,6 +89,7 @@ export class OpenClawDaemon extends EventEmitter {
   private botMessageSuppressor: BotMessageSuppressor | null = null;
   private configManager: ConfigManager;
   private agentMapper: AgentMapper;
+  private messageParser: AgentMessageParser;
   
   private running = false;
   private startTime: Date | null = null;
@@ -119,6 +123,9 @@ export class OpenClawDaemon extends EventEmitter {
   // Agent hints from Gateway events: contentHash → { agentId, timestamp }
   private agentHints: Map<string, { agentId: string; timestamp: number }> = new Map();
   private readonly AGENT_HINT_TTL = 30000; // 30 seconds
+  
+  // Debug log directory creation flag
+  private debugLogDirReady = false;
 
   constructor(config: DaemonConfig = {}) {
     super();
@@ -131,6 +138,7 @@ export class OpenClawDaemon extends EventEmitter {
     this.configManager = new ConfigManager();
     this.webhookManager = new WebhookManager();
     this.agentMapper = new AgentMapper();
+    this.messageParser = new AgentMessageParser();
     
     // Ensure gateway token exists (auto-generate if missing)
     const { token: gatewayToken, generated } = this.configManager.ensureGatewayToken();
@@ -426,15 +434,13 @@ export class OpenClawDaemon extends EventEmitter {
       if (lastSentAt && now - lastSentAt < this.DEDUP_TTL) {
         this.log('Relay: content already forwarded via Gateway, just deleting bot message');
       } else {
-        // Resolve agent: Gateway hint → content parsing → default
+        // Resolve default agent from Gateway hint, then use parser for multi-agent splitting
         const hint = this.agentHints.get(contentHash);
         const hintedAgent = hint ? this.agentMapper.resolve(hint.agentId) : null;
-        const agent = hintedAgent
-          || this.resolveAgentFromContent(detected.content)
-          || this.agentMapper.getDefaultAgent();
+        const defaultAgent = hintedAgent || this.agentMapper.getDefaultAgent();
 
-        this.forceLog(`📨 Relay: forwarding bot message as ${agent.emoji} ${agent.name}`);
-        await this.forwardToWebhook(agent, detected.content);
+        this.forceLog(`📨 Relay: forwarding bot message (default: ${defaultAgent.emoji} ${defaultAgent.name})`);
+        await this.parseAndForward(detected.content, defaultAgent);
       }
 
       // Delete the original bot message (suppression count tracked by 'suppressed' event)
@@ -447,26 +453,6 @@ export class OpenClawDaemon extends EventEmitter {
   }
 
   /**
-   * Try to resolve an agent from message content.
-   * OpenClaw may prefix messages with agent emoji/name.
-   */
-  private resolveAgentFromContent(content: string): AgentDefinition | null {
-    const trimmed = content.trim();
-    for (const agent of AGENT_DEFINITIONS) {
-      if (trimmed.startsWith(agent.emoji)) {
-        return agent;
-      }
-      if (trimmed.startsWith(`${agent.name}:`) || trimmed.startsWith(`${agent.name} `)) {
-        return agent;
-      }
-      if (trimmed.startsWith(`[${agent.name}]`) || trimmed.startsWith(`**${agent.name}**`)) {
-        return agent;
-      }
-    }
-    return null;
-  }
-
-  /**
    * Handle raw message from gateway (for debugging/logging)
    */
   private handleRawMessage(message: GatewayMessage): void {
@@ -474,25 +460,12 @@ export class OpenClawDaemon extends EventEmitter {
     this.lastMessageAt = new Date();
     
     if (this.config.verbose) {
-      this.log(`Raw message: ${JSON.stringify(message).substring(0, 500)}...`);
-      // Log message structure for debugging
-      const keys = Object.keys(message);
-      this.log(`  Keys: ${keys.join(', ')}`);
-      if ((message as any).role) {
-        this.log(`  Role: ${(message as any).role}`);
-      }
-      if ((message as any).stream) {
-        this.log(`  Stream: ${(message as any).stream}`);
-      }
-      if ((message as any).agentId) {
-        this.log(`  AgentId: ${(message as any).agentId}`);
-      }
-      if ((message as any).runId) {
-        this.log(`  RunId: ${(message as any).runId}`);
-      }
-      if ((message as any).data) {
-        this.log(`  Data keys: ${Object.keys((message as any).data).join(', ')}`);
-      }
+      // Log full message JSON for protocol analysis (not truncated)
+      const fullJson = JSON.stringify(message, null, 2);
+      this.log(`Raw message:\n${fullJson}`);
+      
+      // Write to debug log file for analysis when deployed to real environment
+      this.writeDebugLog(message);
     }
   }
 
@@ -530,50 +503,59 @@ export class OpenClawDaemon extends EventEmitter {
     this.forceLog(`📥 Gateway: agent response from ${agent.emoji} ${agent.name}`);
     this.emit('message_received', agent.id, content);
     
-    await this.forwardToWebhook(agent, content);
+    await this.parseAndForward(content, agent);
   }
 
   /**
-   * Extract agent identifier from OpenClaw Gateway message
-   * Checks multiple fields since OpenClaw may send agent info in different places
+   * Extract agent identifier from OpenClaw Gateway message.
+   * Priority: sessionId (session key) → direct fields → nested data → runId → fallback
    */
   private extractAgentIdentifier(message: AgentResponseMessage): string {
-    // Direct fields
-    if (message.agentId) return message.agentId;
+    // Priority 1: Parse sessionId/sessionKey for agent identification
+    // OpenClaw Gateway encodes agent identity in session keys: agent:<agentId>:<channel>:<peer>
+    const sessionId = (message as any).sessionId || (message as any).sessionKey;
+    if (sessionId) {
+      const parsed = parseSessionKey(sessionId);
+      if (parsed.agentId && parsed.agentId !== 'assistant') {
+        this.log(`Agent from session key: ${parsed.agentId} (session: ${sessionId})`);
+        return parsed.agentId;
+      }
+    }
+
+    // Priority 2: Direct fields (may already be resolved by GatewayClient)
+    if (message.agentId && message.agentId !== 'assistant') return message.agentId;
     if (message.agentName) return message.agentName;
     if ((message as any).agent) return (message as any).agent;
     if ((message as any).name) return (message as any).name;
     
-    // Check nested data object
-    const data = (message as any).data;
-    if (data) {
-      if (data.agentId) return data.agentId;
-      if (data.agentName) return data.agentName;
-      if (data.agent) return data.agent;
-      if (data.name) return data.name;
+    // Priority 3: Check nested payload/data object
+    const payload = (message as any).payload || (message as any).data;
+    if (payload && typeof payload === 'object') {
+      // Check session key inside payload
+      const payloadSession = payload.sessionId || payload.sessionKey;
+      if (payloadSession) {
+        const parsed = parseSessionKey(payloadSession);
+        if (parsed.agentId && parsed.agentId !== 'assistant') return parsed.agentId;
+      }
+      if (payload.agentId && payload.agentId !== 'assistant') return payload.agentId;
+      if (payload.agentName) return payload.agentName;
+      if (payload.agent) return payload.agent;
     }
     
-    // Check runId - might contain agent info like "base-12345" or "agentId-xxx"
+    // Priority 4: Check runId for agent prefix like "base-xxx" or "searcher-xxx"
     const runId = message.id || (message as any).runId;
     if (runId && typeof runId === 'string') {
-      // Try to extract agent from runId formats like "base-xxx" or "searcher-xxx"
       const runIdMatch = runId.match(/^([a-z][a-z0-9-]*)-[a-z0-9]+$/i);
       if (runIdMatch) {
         const potentialAgent = runIdMatch[1];
-        // Verify it's a known agent ID
         if (this.agentMapper.resolve(potentialAgent)) {
           return potentialAgent;
         }
       }
     }
     
-    // Log for debugging when we can't find agent
-    if (this.config.verbose) {
-      this.log(`Could not extract agent from message. Keys: ${Object.keys(message).join(', ')}`);
-      this.log(`  Full message: ${JSON.stringify(message).substring(0, 300)}`);
-    }
-    
-    return 'assistant';
+    // Fallback: return whatever agentId was set (even 'assistant')
+    return message.agentId || 'assistant';
   }
 
   /**
@@ -660,7 +642,7 @@ export class OpenClawDaemon extends EventEmitter {
       this.log(`Flushing buffer for ${agent.name}: ${buffered.content.length} chars`);
       this.emit('message_received', agent.id, buffered.content);
       
-      await this.forwardToWebhook(agent, buffered.content);
+      await this.parseAndForward(buffered.content, agent);
       this.responseBuffers.delete(messageId);
     }
     
@@ -680,7 +662,7 @@ export class OpenClawDaemon extends EventEmitter {
       this.log(`End message content for ${agent.name}: ${content.length} chars`);
       this.emit('message_received', agent.id, content);
       
-      await this.forwardToWebhook(agent, content);
+      await this.parseAndForward(content, agent);
     }
     
     // Mark agent as exited if appropriate
@@ -703,7 +685,33 @@ export class OpenClawDaemon extends EventEmitter {
   }
 
   /**
-   * Forward a message to Discord via webhook with deduplication.
+   * Parse content into agent-attributed sections and forward each via webhook.
+   * When Gateway identified a specific agent (not base/default), forward directly.
+   * Only use AgentMessageParser as fallback when agent is unknown/default.
+   */
+  private async parseAndForward(content: string, defaultAgent: AgentDefinition): Promise<void> {
+    // When Gateway identified a specific non-default agent, trust it and forward directly
+    const isDefaultAgent = defaultAgent.id === 'base';
+    if (!isDefaultAgent) {
+      this.agentHints.set(this.hashForDedup(content), { agentId: defaultAgent.id, timestamp: Date.now() });
+      await this.forwardToWebhook(defaultAgent, content);
+      return;
+    }
+
+    // Fallback: use parser to detect multi-agent sections in default/base responses
+    const sections = this.messageParser.parse(content, defaultAgent);
+
+    for (const section of sections) {
+      if (section.agent.id !== defaultAgent.id) {
+        this.forceLog(`🔀 Parsed agent switch: ${section.agent.emoji} ${section.agent.name}`);
+      }
+      this.agentHints.set(this.hashForDedup(section.content), { agentId: section.agent.id, timestamp: Date.now() });
+      await this.forwardToWebhook(section.agent, section.content);
+    }
+  }
+
+  /**
+   * Forward a single message to Discord via webhook with deduplication.
    * Uses sendAsAgentDirect to pass agent info directly, allowing base webhook to use correct username/avatar.
    */
   private async forwardToWebhook(agent: AgentDefinition, content: string): Promise<void> {
@@ -834,7 +842,7 @@ export class OpenClawDaemon extends EventEmitter {
         if (now - buffer.lastUpdate > this.BUFFER_STALE_THRESHOLD) {
           if (buffer.content.trim()) {
             const agent = this.agentMapper.resolve(buffer.agentId) || this.agentMapper.getDefaultAgent();
-            this.forwardToWebhook(agent, buffer.content).catch(() => {});
+            this.parseAndForward(buffer.content, agent).catch(() => {});
           }
           this.responseBuffers.delete(id);
           cleanedCount++;
@@ -899,5 +907,29 @@ export class OpenClawDaemon extends EventEmitter {
   forceLog(message: string): void {
     const timestamp = new Date().toLocaleTimeString();
     console.log(`[${timestamp}] [TMC Daemon] ${message}`);
+  }
+
+  /**
+   * Write raw Gateway message to debug log file for protocol analysis.
+   * Only called when verbose mode is enabled. Writes to ~/.openclaw/tmc-gateway-debug.log
+   */
+  private writeDebugLog(message: GatewayMessage): void {
+    try {
+      const logDir = path.join(os.homedir(), '.openclaw');
+      if (!this.debugLogDirReady) {
+        fs.mkdirSync(logDir, { recursive: true });
+        this.debugLogDirReady = true;
+      }
+      const logFile = path.join(logDir, 'tmc-gateway-debug.log');
+      const timestamp = new Date().toISOString();
+      const entry = `[${timestamp}] ${JSON.stringify(message)}\n`;
+      fs.appendFile(logFile, entry, (err) => {
+        if (err && this.config.verbose) {
+          this.log(`Debug log write failed: ${err.message}`);
+        }
+      });
+    } catch {
+      // Debug logging should never break the daemon
+    }
   }
 }

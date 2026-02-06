@@ -53,6 +53,9 @@ export enum GatewayMessageType {
   // Channel events
   CHANNEL_MESSAGE = 'channel_message',
   
+  // Chat events (OpenClaw Gateway streaming)
+  CHAT = 'chat',
+  
   // Status events
   STATUS = 'status',
   HEALTH = 'health',
@@ -162,6 +165,33 @@ const DEFAULT_CONFIG: Required<GatewayClientConfig> = {
   connectionTimeout: 10000,
   verbose: false,
 };
+
+/** Parsed session key components */
+export interface ParsedSessionKey {
+  agentId?: string;
+  channel?: string;
+  raw: string;
+}
+
+/**
+ * Parse an OpenClaw session key to extract agent identity.
+ * Session keys follow the format: agent:<agentId>:<channel>:<accountId>:dm:<peerId>
+ * or shorter variants like agent:<agentId>:<channel>
+ */
+export function parseSessionKey(sessionKey: string): ParsedSessionKey {
+  if (!sessionKey || typeof sessionKey !== 'string') {
+    return { raw: sessionKey || '' };
+  }
+  const parts = sessionKey.split(':');
+  if (parts[0] === 'agent' && parts.length >= 2 && parts[1]) {
+    return {
+      agentId: parts[1],
+      channel: parts.length >= 3 ? parts[2] : undefined,
+      raw: sessionKey,
+    };
+  }
+  return { raw: sessionKey };
+}
 
 /**
  * Extract text content from OpenClaw content array or string
@@ -370,10 +400,18 @@ export class GatewayClient extends EventEmitter {
     // Emit generic message event
     this.emit('message', message);
 
-    // Handle OpenClaw Gateway connect.challenge event
-    if (message.type === 'event' && (message as any).event === 'connect.challenge') {
-      this.handleConnectChallenge(message);
-      return;
+    // Handle OpenClaw Gateway event-type messages
+    if (message.type === 'event') {
+      const eventName = (message as any).event as string;
+      if (eventName === 'connect.challenge') {
+        this.handleConnectChallenge(message);
+        return;
+      }
+      // Handle chat events (agent response streaming)
+      if (eventName && eventName.startsWith('chat')) {
+        this.handleChatEvent(message, eventName);
+        return;
+      }
     }
 
     // First, check for OpenClaw role-based messages (no 'type' field)
@@ -453,6 +491,10 @@ export class GatewayClient extends EventEmitter {
     // Extract text content from array or string
     const textContent = extractTextContent(content);
 
+    // Try to extract agent identity from session key first
+    const sessionId = (message as any).sessionId || (message as any).sessionKey;
+    const parsedSession = sessionId ? parseSessionKey(sessionId) : null;
+
     switch (role) {
       case 'assistant':
         // Transform to agent_response format
@@ -460,9 +502,8 @@ export class GatewayClient extends EventEmitter {
           ...message,
           type: 'agent_response',
           content: textContent,
-          // Try to extract agent info from message
-          agentId: (message as any).agentId || (message as any).agent || 'assistant',
-          agentName: (message as any).agentName || (message as any).name || 'Assistant',
+          agentId: parsedSession?.agentId || (message as any).agentId || (message as any).agent || 'assistant',
+          agentName: (message as any).agentName || (message as any).name || parsedSession?.agentId || 'Assistant',
         };
         this.emit('agent_response', agentResponse);
         break;
@@ -493,6 +534,11 @@ export class GatewayClient extends EventEmitter {
   private handleStreamMessage(message: AgentResponseMessage): void {
     const { stream, data, runId } = message;
 
+    // Try to extract agent identity from session key
+    const sessionId = (message as any).sessionId || (message as any).sessionKey;
+    const parsedSession = sessionId ? parseSessionKey(sessionId) : null;
+    const resolvedAgentId = parsedSession?.agentId || (message as any).agentId || 'assistant';
+
     switch (stream) {
       case 'thinking':
         // Streaming thinking/reasoning content
@@ -500,7 +546,7 @@ export class GatewayClient extends EventEmitter {
           type: 'agent_delta',
           id: runId,
           delta: data?.thinking || '',
-          agentId: (message as any).agentId || 'assistant',
+          agentId: resolvedAgentId,
         };
         this.emit('agent_delta', thinkingDelta);
         break;
@@ -511,7 +557,7 @@ export class GatewayClient extends EventEmitter {
           type: 'agent_delta',
           id: runId,
           delta: data?.text || (typeof data === 'string' ? data : ''),
-          agentId: (message as any).agentId || 'assistant',
+          agentId: resolvedAgentId,
         };
         this.emit('agent_delta', textDelta);
         break;
@@ -528,7 +574,7 @@ export class GatewayClient extends EventEmitter {
           type: 'agent_end',
           id: runId,
           complete: true,
-          agentId: (message as any).agentId || 'assistant',
+          agentId: resolvedAgentId,
         };
         this.emit('agent_end', endMessage);
         break;
@@ -536,7 +582,7 @@ export class GatewayClient extends EventEmitter {
       case 'start':
       case 'begin':
         // Stream started
-        this.emit('agent_start', message);
+        this.emit('agent_start', { ...message, agentId: resolvedAgentId });
         break;
 
       default:
@@ -633,6 +679,69 @@ export class GatewayClient extends EventEmitter {
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
+    }
+  }
+
+  /**
+   * Handle OpenClaw Gateway chat events (agent response streaming via event system)
+   * These are the primary way OpenClaw streams agent responses to connected clients.
+   */
+  private handleChatEvent(message: GatewayMessage, eventName: string): void {
+    const payload = (message as any).payload || (message as any).data || {};
+
+    // Extract agent identity from session key in payload or message
+    const sessionId = payload.sessionId || payload.sessionKey || (message as any).sessionId;
+    let agentId = 'assistant';
+    if (sessionId) {
+      const parsed = parseSessionKey(sessionId);
+      if (parsed.agentId) agentId = parsed.agentId;
+    }
+    // Fallback to direct agentId fields
+    if (agentId === 'assistant') {
+      agentId = payload.agentId || (message as any).agentId || 'assistant';
+    }
+
+    // Extract content from various possible locations
+    const rawContent = payload.content || payload.text || payload.delta || '';
+    const textContent = typeof rawContent === 'string' ? rawContent : extractTextContent(rawContent);
+    const runId = payload.runId || (message as any).id;
+
+    this.log(`Chat event: ${eventName} (agent: ${agentId}, session: ${sessionId || 'none'})`);
+
+    // Route based on event subtype
+    if (eventName === 'chat.delta' || eventName === 'chat.stream') {
+      const deltaMsg: AgentResponseMessage = {
+        type: 'agent_delta',
+        id: runId,
+        delta: textContent,
+        agentId,
+      };
+      this.emit('agent_delta', deltaMsg);
+    } else if (eventName === 'chat.end' || eventName === 'chat.complete' || eventName === 'chat.done') {
+      const endMsg: AgentResponseMessage = {
+        type: 'agent_end',
+        id: runId,
+        content: textContent,
+        complete: true,
+        agentId,
+      };
+      this.emit('agent_end', endMsg);
+    } else if (eventName === 'chat.start' || eventName === 'chat.begin') {
+      this.emit('agent_start', { ...message, agentId });
+    } else if (eventName === 'chat.error') {
+      this.emit('error', new Error(payload.message || payload.error || 'Chat error'));
+    } else {
+      // Default: treat as agent_response (complete response or generic chat event)
+      if (textContent) {
+        const responseMsg: AgentResponseMessage = {
+          type: 'agent_response',
+          id: runId,
+          content: textContent,
+          agentId,
+          agentName: agentId,
+        };
+        this.emit('agent_response', responseMsg);
+      }
     }
   }
 
