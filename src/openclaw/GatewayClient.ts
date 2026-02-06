@@ -5,6 +5,7 @@
 
 import WebSocket from 'ws';
 import { EventEmitter } from 'events';
+import crypto from 'crypto';
 
 /** Gateway connection configuration */
 export interface GatewayClientConfig {
@@ -637,7 +638,7 @@ export class GatewayClient extends EventEmitter {
 
   /**
    * Handle OpenClaw Gateway connect.challenge event
-   * Responds with authentication token to complete connection handshake
+   * Responds with JSON-RPC style connect request to complete connection handshake
    */
   private handleConnectChallenge(message: GatewayMessage): void {
     const payload = (message as any).payload || {};
@@ -650,23 +651,37 @@ export class GatewayClient extends EventEmitter {
       this.log('Warning: No gateway token configured, authentication may fail');
     }
 
-    // Send connect response with token and nonce
-    const connectResponse = {
-      type: 'connect',
-      token: this.config.gatewayToken,
-      nonce: nonce,
-      ts: ts,
-      client: {
-        name: 'too-many-claw',
-        version: '1.0.0',
+    // Generate unique request ID
+    const requestId = crypto.randomUUID();
+
+    // Send connect request in OpenClaw Gateway JSON-RPC format
+    // The gateway expects: { type: 'req', id, method: 'connect', params: { ... } }
+    const connectRequest = {
+      type: 'req',
+      id: requestId,
+      method: 'connect',
+      params: {
+        minProtocol: 3,
+        maxProtocol: 3,
+        client: {
+          id: 'too-many-claw',
+          version: '1.0.24',
+          platform: process.platform,
+          mode: 'daemon',
+        },
+        role: 'operator',
+        scopes: ['operator.admin', 'operator.approvals'],
+        token: this.config.gatewayToken,
+        nonce: nonce,
+        ts: ts,
       },
     };
 
-    const sent = this.send(connectResponse as GatewayMessage);
+    const sent = this.send(connectRequest as GatewayMessage);
     if (sent) {
-      this.log('Sent connect response with authentication token');
+      this.log(`Sent connect request (id: ${requestId.substring(0, 8)}...)`);
     } else {
-      this.log('Failed to send connect response');
+      this.log('Failed to send connect request');
     }
   }
 
