@@ -5,6 +5,7 @@
 import fs from 'fs-extra';
 import path from 'path';
 import os from 'os';
+import crypto from 'crypto';
 
 export interface DiscordConfig {
   token?: string;
@@ -47,9 +48,16 @@ export interface OpenClawDiscordConfig {
 
 export interface OpenClawGatewayConfig {
   discord?: OpenClawDiscordConfig;
-  /** Gateway authentication token */
+  /** Gateway authentication settings */
+  auth?: {
+    /** Gateway authentication token */
+    token?: string;
+    /** Gateway password (alternative to token) */
+    password?: string;
+  };
+  /** Legacy: Gateway authentication token (deprecated, use auth.token) */
   token?: string;
-  /** Gateway password (alternative to token) */
+  /** Legacy: Gateway password (deprecated, use auth.password) */
   password?: string;
 }
 
@@ -656,7 +664,7 @@ export class ConfigManager {
   /**
    * Get the OpenClaw Gateway authentication token
    * First checks environment variable OPENCLAW_GATEWAY_TOKEN,
-   * then falls back to openclaw.json gateway.token or gateway.password
+   * then falls back to openclaw.json gateway.auth.token
    */
   getGatewayToken(): string | undefined {
     // First check environment variable
@@ -665,8 +673,15 @@ export class ConfigManager {
       return envToken;
     }
 
-    // Fall back to openclaw.json
+    // Fall back to openclaw.json - check gateway.auth.token (correct path)
     const config = this.readOpenClawConfig();
+    if (config?.gateway?.auth?.token) {
+      return config.gateway.auth.token;
+    }
+    if (config?.gateway?.auth?.password) {
+      return config.gateway.auth.password;
+    }
+    // Also check legacy paths for backwards compatibility
     if (config?.gateway?.token) {
       return config.gateway.token;
     }
@@ -675,6 +690,76 @@ export class ConfigManager {
     }
 
     return undefined;
+  }
+
+  /**
+   * Generate a secure random gateway token
+   * @returns A 64-character hex string (32 bytes of entropy)
+   */
+  generateGatewayToken(): string {
+    return crypto.randomBytes(32).toString('hex');
+  }
+
+  /**
+   * Save a gateway token to openclaw.json
+   * Creates or updates the gateway.auth.token path
+   * @param token The token to save
+   * @returns true if successful, false otherwise
+   */
+  saveGatewayToken(token: string): boolean {
+    try {
+      // Read existing config or create new one
+      let config: Record<string, unknown> = {};
+      if (fs.existsSync(this.openclawConfigPath)) {
+        config = fs.readJsonSync(this.openclawConfigPath);
+      }
+
+      // Ensure gateway.auth structure exists
+      if (!config.gateway) {
+        config.gateway = {};
+      }
+      const gateway = config.gateway as Record<string, unknown>;
+      if (!gateway.auth) {
+        gateway.auth = {};
+      }
+      const auth = gateway.auth as Record<string, unknown>;
+      
+      // Set the token
+      auth.token = token;
+
+      // Write back to file
+      fs.ensureDirSync(path.dirname(this.openclawConfigPath));
+      fs.writeJsonSync(this.openclawConfigPath, config, { spaces: 2 });
+      
+      return true;
+    } catch (error) {
+      console.error('Failed to save gateway token:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Ensure a gateway token exists, creating one if necessary
+   * @returns Object with token and whether it was newly generated
+   */
+  ensureGatewayToken(): { token: string; generated: boolean } {
+    // Check if token already exists
+    const existingToken = this.getGatewayToken();
+    if (existingToken) {
+      return { token: existingToken, generated: false };
+    }
+
+    // Generate a new token
+    const newToken = this.generateGatewayToken();
+    
+    // Save it to openclaw.json
+    const saved = this.saveGatewayToken(newToken);
+    if (!saved) {
+      // Even if save failed, return the token for this session
+      console.warn('Warning: Could not persist gateway token to openclaw.json');
+    }
+
+    return { token: newToken, generated: true };
   }
 
   // ============================================

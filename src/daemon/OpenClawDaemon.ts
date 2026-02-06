@@ -111,10 +111,10 @@ export class OpenClawDaemon extends EventEmitter {
     this.webhookManager = new WebhookManager();
     this.agentMapper = new AgentMapper();
     
-    // Get gateway token from environment or config
-    const gatewayToken = this.configManager.getGatewayToken();
-    if (!gatewayToken) {
-      this.forceLog('Warning: No gateway token found. Set OPENCLAW_GATEWAY_TOKEN env var or configure in openclaw.json');
+    // Ensure gateway token exists (auto-generate if missing)
+    const { token: gatewayToken, generated } = this.configManager.ensureGatewayToken();
+    if (generated) {
+      this.forceLog('🔑 Auto-generated gateway token and saved to openclaw.json');
     }
     
     this.gatewayClient = new GatewayClient({
