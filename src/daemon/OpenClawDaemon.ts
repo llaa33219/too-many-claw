@@ -220,6 +220,9 @@ export class OpenClawDaemon extends EventEmitter {
     this.stopBufferCleanup();
     await this.gatewayClient.disconnect();
     
+    // Wait for all pending webhook sends to complete before destroying clients
+    await this.sendChain;
+    
     // Disconnect bot message suppressor
     if (this.botMessageSuppressor) {
       await this.botMessageSuppressor.disconnect();
@@ -738,6 +741,8 @@ export class OpenClawDaemon extends EventEmitter {
   /**
    * Parse content into agent-attributed sections and forward each via webhook.
    * Always runs the parser to strip <agentId> tags and split multi-agent responses.
+   * All sections from a single response are enqueued as one atomic batch on the
+   * send chain so that concurrent parseAndForward calls cannot interleave sections.
    */
   private async parseAndForward(content: string, defaultAgent: AgentDefinition): Promise<void> {
     const sections = this.messageParser.parse(content, defaultAgent);
@@ -747,16 +752,16 @@ export class OpenClawDaemon extends EventEmitter {
         this.forceLog(`🔀 Agent: ${section.agent.emoji} ${section.agent.name}`);
       }
       this.agentHints.set(this.hashForDedup(section.content), { agentId: section.agent.id, timestamp: Date.now() });
-      await this.enqueueSend(section.agent, section.content);
     }
-  }
 
-  /**
-   * Enqueue a webhook send to guarantee sequential ordering.
-   * Each send waits for the previous one to complete before starting.
-   */
-  private enqueueSend(agent: AgentDefinition, content: string): Promise<void> {
-    const task = this.sendChain.then(() => this.forwardToWebhook(agent, content));
+    // Enqueue entire response as one atomic batch — prevents interleaving
+    // when multiple parseAndForward calls run concurrently
+    const batch = async () => {
+      for (const section of sections) {
+        await this.forwardToWebhook(section.agent, section.content);
+      }
+    };
+    const task = this.sendChain.then(batch);
     this.sendChain = task.catch(() => {}); // errors don't break the chain
     return task;
   }
