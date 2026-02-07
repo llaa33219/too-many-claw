@@ -35,27 +35,6 @@ I am the coordinator of the Too Many Claw team. I remain active at all times, re
 - Act as a mediator in conflict situations
 - Guide completed agents toward departure
 - Serve as a bridge between users and the team
-
-## @Mention Agent Summoning
-
-When users mention an agent with @agentId format, you MUST summon that agent and include their response.
-
-- Summoned agents respond with their expertise using their own tags
-- Multiple mentions → summon all mentioned agents (e.g. @pentester @vuln-finder)
-- Base provides context before/after summoned agents' responses
-- **Always use the EXACT agent ID from the reference list as the tag name**
-
-### Valid Agent IDs:
-base, searcher, tech-researcher, trend-analyst, data-provider, counselor, user-psychologist, questioner, persuader, educator, planner, team-composer, promoter, uploader, backend-dev, frontend-dev, designer, code-reviewer, doc-writer, automator, prompt-engineer, ai-illustrator, program-tester, user-tester, security-checker, vuln-finder, pentester, fact-bomber, roaster, critic, negativist, praiser, loophole-finder, threatener, dirty-worker
-
-⚠️ Common mistakes: <tester>→<program-tester>, <ux-tester>→<user-tester>, <security>→<security-checker>, <researcher>→<tech-researcher>
-
-Example:
-User: "@pentester check this code for security issues"
-Response: <base>Bringing in the security expert.</base><pentester>Analyzing the code...</pentester>
-
-User: "@program-tester @user-tester test this feature"
-Response: <base>Summoning testing experts.</base><program-tester>Running unit tests...</program-tester><user-tester>Testing from user perspective...</user-tester><base>Here are the results.</base>
 `,
 
   searcher: `# 🔍 Search Specialist
@@ -1148,55 +1127,10 @@ I handle the undesirable tasks. I take on work that other agents don't want to d
 };
 
 /**
- * Common rules appended to every agent's SOUL template.
- * Ensures all agents know how to format responses with XML tags for Discord routing.
- */
-export const COMMON_AGENT_RULES = `
----
-
-## Response Tag Rules (System)
-
-You MUST wrap your entire response in your agent ID tag. This is a system-level rule for routing messages to the correct Discord profile.
-
-Your agent ID is: **{{AGENT_ID}}**
-
-Format: <{{AGENT_ID}}>your entire response</{{AGENT_ID}}>
-
-### Valid Agent IDs (use ONLY these exact strings as tag names):
-base, searcher, tech-researcher, trend-analyst, data-provider, counselor, user-psychologist, questioner, persuader, educator, planner, team-composer, promoter, uploader, backend-dev, frontend-dev, designer, code-reviewer, doc-writer, automator, prompt-engineer, ai-illustrator, program-tester, user-tester, security-checker, vuln-finder, pentester, fact-bomber, roaster, critic, negativist, praiser, loophole-finder, threatener, dirty-worker
-
-### Rules:
-- Always wrap YOUR OWN response in <{{AGENT_ID}}>...</{{AGENT_ID}}>
-- When summoning another agent, use THEIR exact ID from the list above for their response tag
-- NEVER invent tag names — only the 35 IDs listed above are valid
-- Tags are invisible to users and do not affect the response content
-
-### ⚠️ Common Mistakes (DO NOT make these):
-- ❌ <tester> → ✅ <program-tester>
-- ❌ <ux-tester> → ✅ <user-tester>
-- ❌ <security> → ✅ <security-checker>
-- ❌ <researcher> → ✅ <tech-researcher>
-- ❌ <pentest> → ✅ <pentester>
-- ❌ <backend> → ✅ <backend-dev>
-- ❌ <frontend> → ✅ <frontend-dev>
-- ❌ <reviewer> → ✅ <code-reviewer>
-- ❌ <vulnerability> → ✅ <vuln-finder>
-- ❌ <docs> or <writer> → ✅ <doc-writer>
-- ❌ <psychologist> → ✅ <user-psychologist>
-- ❌ <loophole> → ✅ <loophole-finder>
-
-### Multi-agent example:
-<base>Let me bring in the experts.</base><program-tester>Running tests now...</program-tester><security-checker>Reviewing security...</security-checker><base>Here is the summary.</base>
-`;
-
-/**
- * Get SOUL template by agent ID, with common rules appended.
+ * Get SOUL template by agent ID.
  */
 export function getSoulTemplate(agentId: string): string | undefined {
-  const template = SOUL_TEMPLATES[agentId];
-  if (!template) return undefined;
-  const rules = COMMON_AGENT_RULES.replaceAll('{{AGENT_ID}}', agentId);
-  return template + '\n' + rules;
+  return SOUL_TEMPLATES[agentId];
 }
 
 export default SOUL_TEMPLATES;

@@ -8,7 +8,7 @@ import fs from 'fs-extra';
 import path from 'path';
 import os from 'os';
 import { AGENT_DEFINITIONS } from '../agents/definitions.js';
-import { getSoulTemplate, COMMON_AGENT_RULES } from '../agents/souls/index.js';
+import { getSoulTemplate } from '../agents/souls/index.js';
 
 const OPENCLAW_DIR = path.join(os.homedir(), '.openclaw');
 
@@ -18,11 +18,9 @@ const OPENCLAW_DIR = path.join(os.homedir(), '.openclaw');
 export interface AgentRegistrationResult {
   success: boolean;
   totalAgents: number;
-  newlyAdded: string[];      // agent IDs that were newly added
-  alreadyExisted: string[];  // agent IDs that already existed
+  newlyAdded: string[];
+  alreadyExisted: string[];
   workspacesCreated: number;
-  webhookModeConfigured: boolean;  // true if replyToMode was set to 'off'
-
   error?: string;
 }
 
@@ -45,18 +43,12 @@ async function postinstall(): Promise<void> {
     console.log('✓ All agents already registered in openclaw.json');
   }
   
-  if (result.webhookModeConfigured) {
-    console.log('✓ Configured webhook-only mode (disabled OpenClaw direct Discord messages)');
-  }
-  
   console.log('✓ Created SKILL.md');
 
-  
   console.log('\n🦀 Too Many Claw setup complete!');
   console.log('\nNext steps:');
-  console.log('  1. Run `tmc setup` to configure Discord and webhooks');
-  console.log('  2. Run `tmc simulate` to test locally');
-  console.log('  3. Run `tmc daemon run` to start the webhook daemon\n');
+  console.log('  1. Run `tmc setup` to register agents');
+  console.log('  2. Run `tmc agents` to list all agents\n');
 }
 
 function generateBasicSoul(agent: typeof AGENT_DEFINITIONS[0]): string {
@@ -80,18 +72,16 @@ ${agent.role}
 ## Interaction Rules
 - Respond when summoned via @mention
 - Exit when work is complete
-` + '\n' + COMMON_AGENT_RULES.replaceAll('{{AGENT_ID}}', agent.id);
+`;
 }
 
 /**
  * Merge TMC agents into OpenClaw configuration
- * Returns information about which agents were added
  */
-async function mergeOpenclawConfig(configPath: string): Promise<{ newlyAdded: string[]; alreadyExisted: string[]; webhookModeConfigured: boolean }> {
+async function mergeOpenclawConfig(configPath: string): Promise<{ newlyAdded: string[]; alreadyExisted: string[] }> {
   let config: Record<string, unknown> = {};
   const newlyAdded: string[] = [];
   const alreadyExisted: string[] = [];
-  let webhookModeConfigured = false;
 
   // Backup existing config
   if (await fs.pathExists(configPath)) {
@@ -106,54 +96,10 @@ async function mergeOpenclawConfig(configPath: string): Promise<{ newlyAdded: st
   }
   
   // Always update agentToAgent.allow to include all TMC agents
-  // This ensures new agents added in updates are properly allowed
   (config.tools as Record<string, unknown>).agentToAgent = {
     enabled: ((config.tools as Record<string, unknown>).agentToAgent as Record<string, unknown>)?.enabled ?? true,
     allow: AGENT_DEFINITIONS.map(a => a.id),
   };
-
-  // Clean up any deprecated/invalid top-level keys that may have been added previously
-  // OpenClaw only accepts known keys at root level
-  if (config.discord) {
-    delete config.discord;
-    webhookModeConfigured = true;
-  }
-  if (config.defaults) {
-    delete config.defaults;
-    webhookModeConfigured = true;
-  }
-  
-  // Clean up channels.discord if it has invalid nested keys
-  // Note: We now use TMC daemon's message interception instead of trying to disable
-  // OpenClaw's Discord output (which doesn't work as expected)
-  if (config.channels) {
-    const channels = config.channels as Record<string, unknown>;
-    if (channels.discord) {
-      const discordChannel = channels.discord as Record<string, unknown>;
-      // Remove invalid keys we may have added before
-      if (discordChannel.actions) {
-        delete discordChannel.actions;
-        webhookModeConfigured = true;
-      }
-      if (discordChannel.replyToMode) {
-        delete discordChannel.replyToMode;
-        webhookModeConfigured = true;
-      }
-      // Remove empty discord object if nothing left
-      if (Object.keys(discordChannel).length === 0) {
-        delete channels.discord;
-      }
-    }
-    // Remove tmc-webhook channel config (we don't use custom channel plugin anymore)
-    if (channels['tmc-webhook']) {
-      delete channels['tmc-webhook'];
-      webhookModeConfigured = true;
-    }
-    // Remove empty channels object if nothing left
-    if (Object.keys(channels).length === 0) {
-      delete config.channels;
-    }
-  }
 
   if (!config.agents) {
     config.agents = { list: [] };
@@ -162,7 +108,7 @@ async function mergeOpenclawConfig(configPath: string): Promise<{ newlyAdded: st
   const agentList = (config.agents as Record<string, unknown[]>).list || [];
   const existingIds = new Set(agentList.map((a: unknown) => (a as Record<string, string>).id));
 
-  // Add missing agents and track which were added
+  // Add missing agents
   for (const agent of AGENT_DEFINITIONS) {
     if (!existingIds.has(agent.id)) {
       agentList.push({
@@ -184,13 +130,12 @@ async function mergeOpenclawConfig(configPath: string): Promise<{ newlyAdded: st
 
   await fs.writeJson(configPath, config, { spaces: 2 });
   
-  return { newlyAdded, alreadyExisted, webhookModeConfigured };
+  return { newlyAdded, alreadyExisted };
 }
 
 /**
  * Register TMC agents to OpenClaw configuration
  * Creates workspace directories and adds agents to openclaw.json
- * Can be called from postinstall or from `tmc setup`
  */
 export async function registerTmcAgents(): Promise<AgentRegistrationResult> {
   const result: AgentRegistrationResult = {
@@ -199,7 +144,6 @@ export async function registerTmcAgents(): Promise<AgentRegistrationResult> {
     newlyAdded: [],
     alreadyExisted: [],
     workspacesCreated: 0,
-    webhookModeConfigured: false,
   };
 
   try {
@@ -225,22 +169,11 @@ export async function registerTmcAgents(): Promise<AgentRegistrationResult> {
     const mergeResult = await mergeOpenclawConfig(openclawPath);
     result.newlyAdded = mergeResult.newlyAdded;
     result.alreadyExisted = mergeResult.alreadyExisted;
-    result.webhookModeConfigured = mergeResult.webhookModeConfigured;
 
-    // 5. Create SKILL.md
+    // 4. Create SKILL.md
     const skillPath = path.join(OPENCLAW_DIR, 'skills', 'too-many-claw', 'SKILL.md');
     await fs.ensureDir(path.dirname(skillPath));
     await fs.writeFile(skillPath, generateSkillMd(), 'utf-8');
-
-    // 5. Create default TMC config if it doesn't exist
-    const configPath = path.join(OPENCLAW_DIR, 'too-many-claw.json');
-    if (!await fs.pathExists(configPath)) {
-      await fs.writeJson(configPath, {
-        discord: {},
-        webhooks: {},
-        simulation: { enabled: false },
-      }, { spaces: 2 });
-    }
 
     result.success = true;
   } catch (error) {
@@ -260,7 +193,7 @@ version: 1.0.0
 
 # Too Many Claw
 
-35 specialized AI agents collaborating through Discord.
+35 specialized AI agents collaborating through OpenClaw.
 
 ## Agent Categories
 
@@ -280,8 +213,8 @@ Summon an agent with @mention:
 
 ## Commands
 
-- \`tmc start\` - Start Discord bot
-- \`tmc simulate\` - Terminal simulation
+- \`tmc setup\` - Register agents to OpenClaw
+- \`tmc agents\` - List all agents
 - \`tmc status\` - Check agent status
 `;
 }

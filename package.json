@@ -1,7 +1,7 @@
 {
   "name": "too-many-claw",
-  "version": "1.0.38",
-  "description": "OpenClaw extension with 35 AI agents that collaborate via Discord",
+  "version": "1.0.39",
+  "description": "OpenClaw extension with 35 AI agents that collaborate dynamically",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -17,7 +17,7 @@
   "engines": {
     "node": ">=18"
   },
-  "keywords": ["openclaw", "ai", "agents", "discord", "collaboration", "claude"],
+  "keywords": ["openclaw", "ai", "agents", "collaboration", "claude"],
   "author": "",
   "license": "Apache-2.0",
   "repository": {
@@ -29,21 +29,15 @@
   },
   "homepage": "https://github.com/llaa33219/too-many-claw#readme",
   "dependencies": {
-    "ws": "^8.17.0",
-    "discord.js": "^14.15.3",
     "chalk": "^5.3.0",
     "ora": "^8.0.1",
-    "inquirer": "^9.2.23",
     "commander": "^12.1.0",
-    "fs-extra": "^11.2.0",
-    "yaml": "^2.4.5"
+    "fs-extra": "^11.2.0"
   },
   "devDependencies": {
-    "@types/ws": "^8.5.10",
     "typescript": "^5.4.5",
     "@types/node": "^20.12.12",
     "@types/fs-extra": "^11.0.4",
-    "@types/inquirer": "^9.0.7",
     "tsup": "^8.0.2"
   },
   "files": [
