@@ -15,7 +15,7 @@ const program = new Command();
 program
   .name('tmc')
   .description('Too Many Claw - 35 AI agents collaborating via OpenClaw')
-  .version('1.0.38');
+  .version('1.0.40');
 
 // Setup command - register agents to OpenClaw
 program

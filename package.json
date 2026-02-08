@@ -1,6 +1,6 @@
 {
   "name": "too-many-claw",
-  "version": "1.0.39",
+  "version": "1.0.40",
   "description": "OpenClaw extension with 35 AI agents that collaborate dynamically",
   "type": "module",
   "main": "dist/index.js",
